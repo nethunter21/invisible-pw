@@ -268,3 +268,68 @@ def test_one_broken_chain_does_not_stop_others(monkeypatch):
     cfg = {"wallets": [{"chain": "nonsense-chain", "key": "x", "to": "y"},
                        {"chain": "xmr", "wallet_file": "w", "to": "bad"}]}
     assert engine.fire(cfg, dry_run=True) == 1
+
+
+# ------------------------------------------------------------------ prompts / ask-mode
+from lastchance import prompts  # noqa: E402
+
+
+def test_one_seed_fills_every_ask_wallet():
+    cfg = {"wallets": [
+        {"name": "eth", "chain": "eth", "to": "0x1", "ask": "main"},
+        {"name": "btc", "chain": "btc", "to": "bc1", "ask": "main"},
+        {"name": "stored", "chain": "sol", "to": "x", "key": "abc"},
+    ]}
+    assert prompts.labels(cfg) == ["main"]  # one prompt, shared label; stored wallet excluded
+    out = prompts.inject(cfg, {"main": M})
+    assert out["wallets"][0]["mnemonic"] == M and "ask" not in out["wallets"][0]
+    assert out["wallets"][1]["mnemonic"] == M
+    assert out["wallets"][2]["key"] == "abc"  # untouched
+
+
+def test_inject_detects_key_vs_mnemonic():
+    cfg = {"wallets": [{"chain": "eth", "to": "0x1", "ask": "k"}]}
+    out = prompts.inject(cfg, {"k": "0x" + "11" * 32})
+    assert out["wallets"][0]["key"].startswith("0x") and "mnemonic" not in out["wallets"][0]
+
+
+def test_validate_accepts_ask_mode_without_keys():
+    from lastchance import cli
+    cfg = {"wallets": [{"name": "e", "chain": "eth", "to": "0x000000000000000000000000000000000000dEaD",
+                        "ask": "main"}]}
+    assert cli.validate(cfg) == []
+    bad = {"wallets": [{"name": "e", "chain": "eth", "to": "nope", "ask": "main"}]}
+    assert bad and cli.validate(bad)  # bad destination still caught via probe
+
+
+# ------------------------------------------------------------------ kit builder
+def test_kit_build_has_no_keys_when_ask_mode(tmp_path):
+    from lastchance import kit, vault
+    cfg = {"settings": {"fee_boost": 3}, "wallets": [
+        {"name": "eth", "chain": "eth", "to": "0x000000000000000000000000000000000000dEaD", "ask": "main"},
+    ]}
+    out = str(tmp_path / "kit")
+    info = kit.build_kit(cfg, "supersecret123", out, make_zip=True)
+    import os
+    for f in ("model9x", "run.py", "LASTCHANCE.bat", "lastchance.sh", "lastchance/cli.py", "lastchance/chains"):
+        assert os.path.exists(os.path.join(out, f)), f
+    assert not os.path.exists(os.path.join(out, "lastchance", "tests"))
+    assert os.path.isfile(info["zip"]) and len(info["fingerprint"]) == 12
+    reopened = vault.open_config(os.path.join(out, "model9x"), "supersecret123")
+    w = reopened["wallets"][0]
+    assert "ask" in w and "key" not in w and "mnemonic" not in w  # kit carries NO secret
+
+
+# ------------------------------------------------------------------ dashboard (offline)
+def test_dashboard_preview_and_build(tmp_path):
+    from lastchance import dashboard
+    p = dashboard.preview({"chain": "btc", "mnemonic": M, "scan": 1,
+                           "to": "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"})
+    assert p["dest_ok"] and p["addresses"]
+    bad = dashboard.preview({"chain": "eth", "mnemonic": M, "to": "not-an-addr"})
+    assert not bad["dest_ok"]
+    res = dashboard.build({"passphrase": "supersecret123", "out_dir": str(tmp_path / "k"),
+                           "settings": {}, "wallets": [
+                               {"name": "x", "chain": "eth",
+                                "to": "0x000000000000000000000000000000000000dEaD", "ask": "main"}]})
+    assert res["ok"] and res["fingerprint"]

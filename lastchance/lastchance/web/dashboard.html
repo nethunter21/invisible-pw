@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>LAST CHANCE — kit builder</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg:#050509; --bg2:#101020; --card:rgba(16,16,32,.75); --border:rgba(255,255,255,.09);
+    --a1:#6b73ff; --a2:#00f5ff; --danger:#ff4b81; --ok:#28e0a8; --warn:#ffcf5c;
+    --text:#f5f5ff; --muted:#8a8aa5; --radius:16px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:Inter,system-ui,sans-serif;background:radial-gradient(circle at top left,#141432 0,#050509 42%,#050509);
+       color:var(--text);min-height:100vh;padding:28px 16px 80px;line-height:1.5}
+  .wrap{max-width:900px;margin:0 auto}
+  h1{font-weight:700;font-size:26px;letter-spacing:.5px}
+  h1 .lc{color:var(--danger)}
+  .sub{color:var(--muted);margin:6px 0 22px;font-size:14px}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
+        padding:20px;margin-bottom:18px;backdrop-filter:blur(8px)}
+  .card h2{font-size:15px;font-weight:600;margin-bottom:14px;color:var(--a2);letter-spacing:.4px;text-transform:uppercase}
+  label{display:block;font-size:12px;color:var(--muted);margin:10px 0 4px;letter-spacing:.3px}
+  input,select{width:100%;background:#0b0b18;border:1px solid var(--border);border-radius:10px;
+        color:var(--text);padding:10px 12px;font-family:inherit;font-size:14px;outline:none}
+  input:focus,select:focus{border-color:var(--a1)}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+  .btn{background:linear-gradient(120deg,var(--a1),var(--a2));color:#06060e;border:none;border-radius:11px;
+        padding:11px 18px;font-weight:600;font-size:14px;cursor:pointer;font-family:inherit}
+  .btn:hover{opacity:.9}
+  .btn.ghost{background:transparent;border:1px solid var(--border);color:var(--text)}
+  .btn.danger{background:linear-gradient(120deg,var(--danger),#ff7b5c);color:#fff}
+  .btn:disabled{opacity:.5;cursor:not-allowed}
+  .wallet{border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:14px;background:rgba(8,8,18,.6)}
+  .wallet .head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+  .wallet .head .name{font-weight:600}
+  .x{background:none;border:none;color:var(--muted);cursor:pointer;font-size:20px;line-height:1}
+  .x:hover{color:var(--danger)}
+  .pill{display:inline-block;font-size:11px;padding:2px 8px;border-radius:20px;border:1px solid var(--border);color:var(--muted)}
+  .seg{display:flex;gap:8px;margin-top:6px}
+  .seg button{flex:1;background:#0b0b18;border:1px solid var(--border);color:var(--muted);border-radius:10px;
+        padding:9px;cursor:pointer;font-family:inherit;font-size:13px}
+  .seg button.on{border-color:var(--a1);color:var(--text);background:rgba(107,115,255,.12)}
+  .note{font-size:12px;color:var(--muted);margin-top:8px}
+  .result{font-size:13px;margin-top:10px;white-space:pre-wrap;word-break:break-all}
+  .addr{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--a2)}
+  .bad{color:var(--danger)} .good{color:var(--ok)} .warnc{color:var(--warn)}
+  .hide{display:none}
+  .foot{color:var(--muted);font-size:12px;text-align:center;margin-top:18px}
+  .banner{border:1px solid var(--danger);border-radius:12px;padding:12px 14px;margin-bottom:18px;
+        font-size:13px;color:#ffd0dd;background:rgba(255,75,129,.07)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1><span class="lc">LAST&nbsp;CHANCE</span> &nbsp;kit builder</h1>
+  <p class="sub">Add each wallet once. It builds a sealed, run-anywhere emergency kit. Everything here stays on this computer.</p>
+
+  <div class="banner">🔒 <b>Recommended:</b> leave keys in <b>“Ask at fire time”</b> mode. Then the kit stores only your
+  <b>destinations</b> — no keys — and asks for your seed phrase once, when you actually fire. Safe to copy anywhere.</div>
+
+  <div class="card">
+    <h2>Wallets to protect</h2>
+    <div id="wallets"></div>
+    <button class="btn ghost" onclick="addWallet()">+ add wallet</button>
+  </div>
+
+  <div class="card">
+    <h2>Vault settings</h2>
+    <div class="row">
+      <div><label>passphrase to lock the kit (10+ chars)</label><input id="pass" type="password" autocomplete="new-password"></div>
+      <div><label>repeat passphrase</label><input id="pass2" type="password" autocomplete="new-password"></div>
+    </div>
+    <div class="row3">
+      <div><label>fee boost (×) — higher = outbid attacker</label><input id="boost" type="number" value="3" min="1" step="0.5"></div>
+      <div><label>ask “GO” before firing?</label>
+        <select id="confirm"><option value="false">no — fire immediately</option><option value="true">yes — type GO first</option></select></div>
+      <div><label>output folder name</label><input id="outdir" value="lastchance-kit"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Build</h2>
+    <button class="btn danger" id="buildBtn" onclick="build()">🛠️  build emergency kit</button>
+    <div class="result" id="buildResult"></div>
+  </div>
+
+  <p class="foot">After building, run a <b>drill</b> from the kit to rehearse safely. Write down the destination fingerprint.</p>
+</div>
+
+<script>
+const T = new URLSearchParams(location.search).get('t');
+const CHAINS = [
+  ['ethereum','Ethereum (ETH + ERC-20)',true],['bsc','BNB Smart Chain (BNB + BEP-20)',true],
+  ['polygon','Polygon',true],['arbitrum','Arbitrum',true],['base','Base',true],['optimism','Optimism',true],
+  ['avalanche','Avalanche',true],['bitcoin','Bitcoin (BTC)',false],['litecoin','Litecoin (LTC)',false],
+  ['dogecoin','Dogecoin (DOGE)',false],['solana','Solana (SOL + SPL)','sol'],['tron','TRON (TRX + TRC-20)',true],
+  ['xrp','XRP',false]
+];
+const TOKEN_CHAINS = new Set(['ethereum','bsc','polygon','arbitrum','base','optimism','avalanche','tron']);
+let seq = 0;
+const wallets = {};
+
+function opt(c){return CHAINS.map(([v,l])=>`<option value="${v}" ${v===c?'selected':''}>${l}</option>`).join('')}
+
+function addWallet(preset){
+  const id = 'w'+(seq++);
+  wallets[id] = {mode:'ask'};
+  const el = document.createElement('div');
+  el.className='wallet'; el.id=id;
+  el.innerHTML = `
+    <div class="head"><span class="name" id="${id}-title">new wallet</span>
+      <button class="x" onclick="delWallet('${id}')">&times;</button></div>
+    <div class="row">
+      <div><label>name</label><input id="${id}-name" placeholder="e.g. main metamask" oninput="refresh('${id}')"></div>
+      <div><label>chain</label><select id="${id}-chain" onchange="refresh('${id}')">${opt('ethereum')}</select></div>
+    </div>
+    <label>send everything TO (your safe address)</label>
+    <input id="${id}-to" class="addr" placeholder="your cold / hardware wallet address" oninput="refresh('${id}')">
+    <div id="${id}-tokens-box"><label>tokens to rescue (comma separated, or leave as 'all')</label>
+      <input id="${id}-tokens" placeholder="USDC, USDT" value="USDC, USDT"></div>
+    <label>where does the key come from?</label>
+    <div class="seg">
+      <button type="button" id="${id}-m-ask" class="on" onclick="setMode('${id}','ask')">🔒 ask at fire time (recommended)</button>
+      <button type="button" id="${id}-m-store" onclick="setMode('${id}','store')">store key in the kit</button>
+    </div>
+    <div id="${id}-askbox">
+      <label>one seed phrase can cover many wallets — give them the same group name</label>
+      <input id="${id}-ask" value="main-seed" oninput="refresh('${id}')">
+      <label>optional: paste the seed/key now just to <b>preview</b> addresses (NOT saved)</label>
+      <input id="${id}-preview" type="password" placeholder="leave empty to skip preview">
+    </div>
+    <div id="${id}-storebox" class="hide">
+      <label>seed phrase (12/24 words) or private key — WILL be stored encrypted in the kit</label>
+      <input id="${id}-secret" type="password" placeholder="word1 word2 ... / 0x... / WIF / base58">
+    </div>
+    <div id="${id}-adv" class="row"></div>
+    <div style="margin-top:12px"><button class="btn ghost" onclick="preview('${id}')">check addresses</button></div>
+    <div class="result" id="${id}-res"></div>`;
+  document.getElementById('wallets').appendChild(el);
+  refresh(id);
+}
+
+function delWallet(id){ delete wallets[id]; document.getElementById(id).remove(); }
+
+function setMode(id,m){
+  wallets[id].mode=m;
+  document.getElementById(id+'-m-ask').classList.toggle('on',m==='ask');
+  document.getElementById(id+'-m-store').classList.toggle('on',m==='store');
+  document.getElementById(id+'-askbox').classList.toggle('hide',m!=='ask');
+  document.getElementById(id+'-storebox').classList.toggle('hide',m!=='store');
+}
+
+function refresh(id){
+  const chain = document.getElementById(id+'-chain').value;
+  const name = document.getElementById(id+'-name').value || chain;
+  document.getElementById(id+'-title').textContent = name;
+  document.getElementById(id+'-tokens-box').style.display = TOKEN_CHAINS.has(chain) ? '' :
+      (chain==='solana' ? '' : 'none');
+  if(chain==='solana'){ document.getElementById(id+'-tokens').value = document.getElementById(id+'-tokens').value || 'all'; }
+  // advanced fields: accounts (evm/tron via seed) or scan (utxo via seed)
+  const adv = document.getElementById(id+'-adv');
+  const evm = ['ethereum','bsc','polygon','arbitrum','base','optimism','avalanche','tron'].includes(chain);
+  const utxo = ['bitcoin','litecoin','dogecoin'].includes(chain);
+  adv.innerHTML = evm ? `<div><label>if using a seed phrase: how many accounts to scan</label>
+       <input id="${id}-accounts" type="number" value="1" min="1"></div><div></div>`
+    : utxo ? `<div><label>if using a seed phrase: addresses to scan per type</label>
+       <input id="${id}-scan" type="number" value="10" min="1"></div><div></div>` : '';
+}
+
+function detect(sec){ const w=sec.trim().split(/\s+/); return (w.length>=12 && w.every(x=>/^[a-zA-Z]+$/.test(x))); }
+
+function entry(id, forPreview){
+  const g = s=>{const e=document.getElementById(id+'-'+s); return e?e.value.trim():'';};
+  const chain = g('chain');
+  const e = {name: g('name')||chain, chain, to: g('to')};
+  if(TOKEN_CHAINS.has(chain) || chain==='solana'){
+    const t = g('tokens');
+    if(chain==='solana'){ e.tokens = (t && t!=='all') ? t.split(',').map(x=>x.trim()).filter(Boolean) : 'all'; }
+    else if(t) e.tokens = t.split(',').map(x=>x.trim()).filter(Boolean);
+  }
+  const acc = document.getElementById(id+'-accounts'); if(acc) e.accounts = +acc.value||1;
+  const scan = document.getElementById(id+'-scan'); if(scan) e.scan = +scan.value||10;
+  if(wallets[id].mode==='store'){
+    const sec = g('secret');
+    if(sec){ if(detect(sec)) e.mnemonic=sec; else e.key=sec; }
+  } else {
+    e.ask = g('ask')||'main-seed';
+    if(forPreview){ const pv=g('preview'); if(pv){ if(detect(pv)) e.mnemonic=pv; else e.key=pv; delete e.ask; } }
+  }
+  return e;
+}
+
+async function api(path,body){
+  const r = await fetch(path+'?t='+encodeURIComponent(T),{method:'POST',headers:{'Content-Type':'application/json','X-Token':T},body:JSON.stringify(body)});
+  return r.json();
+}
+
+async function preview(id){
+  const res = document.getElementById(id+'-res'); res.textContent='checking...';
+  const e = entry(id,true);
+  if(!e.to){ res.innerHTML='<span class="bad">enter a destination address first</span>'; return; }
+  const out = await api('/api/preview', e);
+  let html='';
+  if(out.dest_ok) html+=`<span class="good">✓ destination valid</span>\n`;
+  else html+=`<span class="bad">✗ destination: ${out.dest_error}</span>\n`;
+  if(out.error) html+=`<span class="warnc">key not previewed: ${out.error}</span>`;
+  else if(out.addresses && out.addresses.length){
+    html+='source addresses:\n'+out.addresses.map(a=>`  <span class="addr">${a}</span>`).join('\n');
+  } else if(wallets[id].mode==='ask'){ html+='<span class="warnc">no key pasted — addresses will come from your seed at fire time</span>'; }
+  res.innerHTML=html;
+}
+
+async function build(){
+  const r = document.getElementById('buildResult'); const btn=document.getElementById('buildBtn');
+  const pass=document.getElementById('pass').value, pass2=document.getElementById('pass2').value;
+  if(pass.length<10){ r.innerHTML='<span class="bad">passphrase must be 10+ characters</span>'; return; }
+  if(pass!==pass2){ r.innerHTML='<span class="bad">passphrases do not match</span>'; return; }
+  const ids=Object.keys(wallets);
+  if(!ids.length){ r.innerHTML='<span class="bad">add at least one wallet</span>'; return; }
+  const payload={
+    passphrase:pass, out_dir:document.getElementById('outdir').value.trim()||'lastchance-kit',
+    settings:{fee_boost:+document.getElementById('boost').value||3, confirm:document.getElementById('confirm').value==='true'},
+    wallets: ids.map(id=>entry(id,false))
+  };
+  btn.disabled=true; r.textContent='building...';
+  const out=await api('/api/build',payload); btn.disabled=false;
+  if(!out.ok){
+    r.innerHTML='<span class="bad">could not build:</span>\n'+((out.problems||[out.error]).map(p=>'  • '+p).join('\n'));
+    return;
+  }
+  r.innerHTML=`<span class="good">✓ kit built!</span>
+folder: <span class="addr">${out.dir}</span>
+zip:    <span class="addr">${out.zip||'(none)'}</span>
+destination fingerprint: <b>${out.fingerprint}</b>  — write this down
+
+Copy that folder (or the zip) to any device. To fire: run LASTCHANCE.bat (Windows) or lastchance.sh (Mac/Linux).
+Do a <b>drill</b> first to rehearse.`;
+}
+
+addWallet();
+</script>
+</body>
+</html>

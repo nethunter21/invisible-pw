@@ -1,6 +1,7 @@
 """Command line entry point.
 
-    lastchance               -> FIRE (one-click mode: passphrase, then everything moves)
+    lastchance               -> FIRE if a model9x is present, else open the setup dashboard
+    lastchance dashboard     -> open the point-and-click kit builder (local web page)
     lastchance drill         -> full rehearsal: real balances, real fees, nothing broadcast
     lastchance seal FILE     -> encrypt a plaintext JSON config into model9x (+ shred FILE)
     lastchance edit          -> decrypt to a temp file, open your editor, re-seal, shred
@@ -21,7 +22,7 @@ import subprocess
 import sys
 import tempfile
 
-from . import engine, ui, vault
+from . import engine, prompts, ui, vault
 
 VAULT_NAME = "model9x"
 SECRET_FIELDS = {"key", "keys", "mnemonic", "bip39_passphrase", "spend_key", "view_key",
@@ -63,6 +64,18 @@ def unlock(path: str) -> dict:
     sys.exit(3)
 
 
+def ask_secrets(config: dict) -> dict:
+    """Ask once per `ask` label for the seed phrase / key, then inject them."""
+    needed = prompts.labels(config)
+    if not needed:
+        return config
+    ui.say(f"  this kit holds no keys - enter your secret(s) now ({len(needed)} needed):")
+    smap = {}
+    for lbl in needed:
+        smap[lbl] = getpass.getpass(f"    seed phrase or private key for '{lbl}': ")
+    return prompts.inject(config, smap)
+
+
 def mask(obj):
     if isinstance(obj, dict):
         return {k: ("***" if k in SECRET_FIELDS else mask(v)) for k, v in obj.items()}
@@ -87,16 +100,18 @@ def validate(config: dict) -> list[str]:
             problems.append(f"{tag}: missing `chain`")
         if "to" not in w:
             problems.append(f"{tag}: missing `to` (destination)")
-        if not any(k in w for k in ("key", "keys", "mnemonic", "wallet_file", "spend_key")):
-            problems.append(f"{tag}: no key / keys / mnemonic")
+        if not prompts.has_stored_secret(w) and not w.get("ask"):
+            problems.append(f"{tag}: needs a key/keys/mnemonic, or an `ask` label to be entered at fire time")
     if problems:
         return problems
-    sweepers, broken = engine.build(config)
+    # Probe with a throwaway key so ask-mode entries (no stored key) still get
+    # their chain + path + destination validated.
+    sweepers, broken = engine.build(prompts.probe(config))
     problems += [e for r in broken for e in r.errors]
     for s in sweepers:
         try:
             s.validate_destination()
-            if s.to in s.addresses():
+            if not s.entry.get("_probe") and s.to in s.addresses():
                 problems.append(f"{s.name}: destination is the same as a source address")
         except Exception as exc:
             problems.append(f"{s.name}: {exc}")
@@ -109,6 +124,7 @@ def cmd_fire(args, dry_run=False):
     config = unlock(find_vault(args.vault))
     settings = config.get("settings", {})
     ui.say(f"  vault unlocked - destination fingerprint {dest_fingerprint(config)}")
+    config = ask_secrets(config)
     if not dry_run and settings.get("confirm", False) and not args.yes:
         if input("  type GO to fire: ").strip().upper() != "GO":
             ui.say("aborted", "warn")
@@ -172,7 +188,14 @@ def cmd_show(args):
 def cmd_addresses(args):
     config = unlock(find_vault(args.vault))
     ui.say(f"destination fingerprint {dest_fingerprint(config)}")
+    config = ask_secrets(config)
     engine.list_addresses(config)
+    return 0
+
+
+def cmd_dashboard(args):
+    from . import dashboard
+    dashboard.serve(open_browser=not args.no_browser, port=args.port)
     return 0
 
 
@@ -207,11 +230,19 @@ def main(argv=None) -> int:
     sub.add_parser("addresses", help="list source/destination addresses")
     sub.add_parser("passwd", help="change passphrase")
     sub.add_parser("template", help="print example config")
+    d = sub.add_parser("dashboard", help="open the setup dashboard to build an emergency kit")
+    d.add_argument("--port", type=int, default=8787)
+    d.add_argument("--no-browser", action="store_true", help="don't auto-open a browser")
     args = p.parse_args(argv)
     if not args.cmd:
-        args.cmd, args.yes = "fire", False
+        # No command: fire if a vault exists next to us, else open the builder.
+        if os.path.isfile(find_vault(args.vault)):
+            args.cmd, args.yes = "fire", False
+        else:
+            args.cmd, args.port, args.no_browser = "dashboard", 8787, False
     handlers = {"fire": cmd_fire, "drill": cmd_drill, "seal": cmd_seal, "edit": cmd_edit, "show": cmd_show,
-                "addresses": cmd_addresses, "passwd": cmd_passwd, "template": cmd_template}
+                "addresses": cmd_addresses, "passwd": cmd_passwd, "template": cmd_template,
+                "dashboard": cmd_dashboard}
     try:
         return handlers[args.cmd](args)
     except KeyboardInterrupt:

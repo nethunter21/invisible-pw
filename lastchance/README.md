@@ -1,6 +1,8 @@
 # LAST CHANCE — emergency crypto sweeper
 
-You find out a wallet is compromised. Double-click **one file**, type **one passphrase**, and every coin and token you configured moves to your safe wallets **in parallel, at the same time**, with aggressive fees.
+You find out a wallet is compromised. Double-click **one file**, type **one passphrase** (and, if you like, your **seed phrase once**), and every coin and token you configured moves to your safe wallets **in parallel, at the same time**, with aggressive fees.
+
+Set it up **once** in a point-and-click dashboard. It builds a sealed kit folder that runs on **any** device — Windows, macOS, Linux — with your safe destinations baked in. Copy it to a USB stick; no per-device setup.
 
 ```
   ██╗      █████╗ ███████╗████████╗     ██████╗██╗  ██╗ █████╗ ███╗   ██╗ ██████╗███████╗
@@ -50,20 +52,36 @@ Your config, which holds the keys, lives **only** in `model9x`, encrypted:
 * It is saved **read-only**. Plaintext configs are overwritten and deleted after sealing.
 * When it unlocks, it prints a **destination fingerprint** (e.g. `DD1119D0BB94`). Write it down. If it ever shows something else, stop.
 
-## Setup (do this NOW, before you need it)
+## Two ways to store keys
+
+| mode | what's in `model9x` | at fire time |
+|---|---|---|
+| **Ask at fire time** (recommended) | only your **destinations** + settings, no keys | you type your seed phrase/key **once** |
+| **Stored** | your keys, encrypted | nothing to type but the passphrase |
+
+"Ask" mode is safest for a portable file: even if someone copies `model9x`, it contains no keys. One seed phrase (e.g. your MetaMask/Phantom recovery phrase) can cover ETH, BNB, Polygon, Solana, BTC... — wallets that share the same `ask` label are all filled from the one phrase you type.
+
+## Setup with the dashboard (easiest — do this NOW, before you need it)
 
 ```bash
-./install.sh                      # Windows: install.bat
-.venv/bin/python -m lastchance template > my-config.json
-# edit my-config.json: keys, seed phrases, destination addresses
-.venv/bin/python -m lastchance seal my-config.json   # -> model9x, plaintext shredded
-.venv/bin/python -m lastchance addresses             # check every from/to address
-.venv/bin/python -m lastchance drill                 # FULL REHEARSAL: real balances + fees, nothing sent
+./install.sh                      # Windows: install.bat   (one time, needs Python 3.9+)
+.venv/bin/python -m lastchance dashboard
 ```
 
-**Emergency:** double-click `LASTCHANCE.bat` (Windows) or `lastchance.sh` (Linux/macOS), type your passphrase, and it fires.
+A local web page opens (it only listens on your own computer, never the network). For each wallet: pick the chain, paste your safe destination address, choose **Ask at fire time** or **Store key**, and click **check addresses** to confirm. Then **build emergency kit** — it writes a `lastchance-kit/` folder (and a `.zip`). Copy that folder to any device.
 
-Other commands: `edit` (decrypt → editor → re-seal → shred), `show` (secrets masked), `passwd`.
+## Setup by hand (alternative)
+
+```bash
+.venv/bin/python -m lastchance template > my-config.json   # edit: destinations, ask labels or keys
+.venv/bin/python -m lastchance seal my-config.json         # -> model9x, plaintext shredded
+.venv/bin/python -m lastchance addresses                   # check every from/to address
+.venv/bin/python -m lastchance drill                       # FULL REHEARSAL: real balances + fees, nothing sent
+```
+
+**Emergency:** from the kit, double-click `LASTCHANCE.bat` (Windows) or `lastchance.sh` (Linux/macOS), type your passphrase (and seed phrase once, in ask mode), and it fires.
+
+Running the program with **no `model9x` present** opens the dashboard; **with one present** it fires. Other commands: `drill`, `addresses`, `edit`, `show`, `passwd`.
 
 To build a standalone single exe that needs no Python on the target machine, run `pip install pyinstaller && pyinstaller --onefile --name LASTCHANCE run.py`, then put `model9x` next to the exe.
 
@@ -75,7 +93,8 @@ See `model9x.example.json`. Per wallet entry:
 |---|---|
 | `chain` | `ethereum`/`eth`, `bsc`/`bnb`, `polygon`, `arbitrum`, `base`, `optimism`, `avalanche`, `bitcoin`/`btc`, `litecoin`/`ltc`, `dogecoin`/`doge`, `solana`/`sol`, `tron`/`trx`, `xrp`, `monero`/`xmr`; custom EVM: any name + `chain_id` + `rpc` |
 | `to` | your safe address (validated, checksum-checked) |
-| `key` / `keys` / `mnemonic` | secrets (+ `path`, `accounts`, `scan`, `bip39_passphrase`) |
+| `ask` | a label; the key is **not stored** — you type it once at fire time. Wallets sharing a label share one typed secret (+ `path`, `accounts`, `scan`) |
+| `key` / `keys` / `mnemonic` | stored secrets (+ `path`, `accounts`, `scan`, `bip39_passphrase`) |
 | `tokens` | EVM/TRON: `["USDC","USDT", {"symbol":"X","address":"0x.."}]`; Solana: `"all"` (default) or a list |
 | `fee_boost` | per-wallet override |
 | `rpc` | string or list of endpoints (strongly recommended: your own paid RPCs, since public ones rate-limit) |
@@ -101,4 +120,4 @@ See `model9x.example.json`. Per wallet entry:
 pip install pytest && python -m pytest -q tests
 ```
 
-The tests are offline. They cover the vault (round-trip, tamper detection), derivation vectors for every chain, and fully signed transactions with verified signatures for BTC (all 4 script types), EVM (nonce replacement, exact fee accounting, private bundle), Solana (batching, size limit) and XRP. They use mocked network responses.
+The tests are offline. They cover the vault (round-trip, tamper detection), derivation vectors for every chain, fully signed transactions with verified signatures for BTC (all 4 script types), EVM (nonce replacement, exact fee accounting, private bundle), Solana (batching, size limit) and XRP, plus ask-mode secret resolution, the kit builder (confirms the built `model9x` carries **no** keys in ask mode) and the dashboard's offline preview/build. They use mocked network responses.

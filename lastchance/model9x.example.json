@@ -15,8 +15,14 @@
     }
   },
   "wallets": [
-    { "name": "eth-main", "chain": "ethereum", "key": "0x...", "to": "0xYourColdWallet", "tokens": ["USDC", "USDT"] },
-    { "name": "eth-seed", "chain": "ethereum", "mnemonic": "word1 word2 ... word12", "accounts": 3, "to": "0xYourColdWallet" },
+    { "_comment": "RECOMMENDED: no key stored. `ask` means you type ONE seed phrase at fire time; every wallet with the same ask label is covered by it.",
+      "name": "eth-main", "chain": "ethereum", "ask": "main-seed", "accounts": 3, "to": "0xYourColdWallet", "tokens": ["USDC", "USDT"] },
+    { "name": "bnb-ask", "chain": "bsc", "ask": "main-seed", "to": "0xYourColdWallet", "tokens": ["USDT"] },
+    { "name": "btc-ask", "chain": "bitcoin", "ask": "main-seed", "scan": 20, "to": "bc1qYourColdWallet" },
+
+    { "_comment": "OR store the key in the (encrypted) file, the old way:" },
+    { "name": "eth-stored", "chain": "ethereum", "key": "0x...", "to": "0xYourColdWallet", "tokens": ["USDC", "USDT"], "enabled": false },
+    { "name": "eth-seed", "chain": "ethereum", "mnemonic": "word1 word2 ... word12", "accounts": 3, "to": "0xYourColdWallet", "enabled": false },
     { "name": "bnb", "chain": "bsc", "key": "0x...", "to": "0xYourColdWallet", "tokens": ["USDT", "USDC"] },
     { "name": "base", "chain": "base", "key": "0x...", "to": "0xYourColdWallet", "enabled": false },
 
