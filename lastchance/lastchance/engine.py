@@ -12,7 +12,8 @@ from .chains import make_sweeper
 from .chains.base import Report
 
 
-def build(config: dict):
+def build(config: dict, log=None):
+    log = log or ui.log
     settings = config.get("settings", {})
     sweepers, broken = [], []
     for i, entry in enumerate(config.get("wallets", [])):
@@ -21,31 +22,37 @@ def build(config: dict):
         name = entry.get("name") or f"{entry.get('chain', '?')}#{i}"
         entry.setdefault("name", name)
         try:
-            sweepers.append(make_sweeper(entry, settings, ui.log))
+            sweepers.append(make_sweeper(entry, settings, log))
         except Exception as exc:
             r = Report(name, entry.get("chain", "?"))
             r.errors.append(f"config error: {exc}")
             broken.append(r)
-            ui.log(name, f"config error: {exc}", "error")
+            log(name, f"config error: {exc}", "error")
     return sweepers, broken
 
 
-def fire(config: dict, dry_run: bool, receipt_dir: str | None = None) -> int:
-    sweepers, broken = build(config)
-    t0 = time.time()
+def run_all(config: dict, dry_run: bool, log=None):
+    """Run every sweeper in parallel, return the reports (no printing)."""
+    sweepers, broken = build(config, log)
 
     def go(s):
         try:
             return s.run(dry_run)
         except Exception as exc:  # never let one chain kill the others
             s.report.errors.append(str(exc))
-            ui.log(s.name, f"crashed: {exc}", "error")
+            s.log(f"crashed: {exc}", "error")
             return s.report
 
     with ThreadPoolExecutor(max(1, len(sweepers))) as pool:
         reports = list(pool.map(go, sweepers)) + broken
     for r in reports:
         r.finished = time.time()
+    return reports
+
+
+def fire(config: dict, dry_run: bool, receipt_dir: str | None = None) -> int:
+    t0 = time.time()
+    reports = run_all(config, dry_run)
     failures = ui.summary(reports)
     ui.say(f"  done in {time.time() - t0:.1f}s  -  {'DRILL, nothing broadcast' if dry_run else 'broadcast complete'}",
            "ok" if not failures else "warn")
