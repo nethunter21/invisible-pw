@@ -1,0 +1,33 @@
+{
+  "settings": {
+    "fee_boost": 3.0,
+    "confirm": false,
+    "timeout": 20,
+    "receipt_dir": null,
+    "gas_tanks": {
+      "evm": "0xPRIVATE_KEY_OF_A_SMALL_SEPARATE_WALLET_HOLDING_A_LITTLE_ETH_AND_BNB",
+      "tron": "PRIVATE_KEY_HEX_OF_A_SMALL_SEPARATE_TRON_WALLET_WITH_~50_TRX"
+    },
+    "api_keys": { "trongrid": "OPTIONAL_TRONGRID_API_KEY" },
+    "rpc": {
+      "ethereum": ["https://ethereum-rpc.publicnode.com", "https://YOUR-PRIVATE-RPC"],
+      "solana": "https://api.mainnet-beta.solana.com"
+    }
+  },
+  "wallets": [
+    { "name": "eth-main", "chain": "ethereum", "key": "0x...", "to": "0xYourColdWallet", "tokens": ["USDC", "USDT"] },
+    { "name": "eth-seed", "chain": "ethereum", "mnemonic": "word1 word2 ... word12", "accounts": 3, "to": "0xYourColdWallet" },
+    { "name": "bnb", "chain": "bsc", "key": "0x...", "to": "0xYourColdWallet", "tokens": ["USDT", "USDC"] },
+    { "name": "base", "chain": "base", "key": "0x...", "to": "0xYourColdWallet", "enabled": false },
+
+    { "name": "btc", "chain": "bitcoin", "mnemonic": "word1 ... word24", "scan": 20, "to": "bc1qYourColdWallet" },
+    { "name": "btc-wif", "chain": "bitcoin", "keys": ["L1...WIF", "K2...WIF"], "to": "bc1qYourColdWallet" },
+    { "name": "ltc", "chain": "litecoin", "key": "T...WIF", "to": "ltc1qYourColdWallet" },
+    { "name": "doge", "chain": "dogecoin", "key": "Q...WIF", "to": "DYourColdWallet" },
+
+    { "name": "sol", "chain": "solana", "key": "BASE58_SECRET_FROM_PHANTOM_EXPORT", "to": "YourColdSolanaAddress", "tokens": "all" },
+    { "name": "tron", "chain": "tron", "key": "HEX_PRIVATE_KEY", "to": "TYourColdTronAddress", "tokens": ["USDT"] },
+    { "name": "xrp", "chain": "xrp", "key": "sYourFamilySeed", "to": "rYourColdOrExchangeAddress", "destination_tag": null, "delete_account": false },
+    { "name": "xmr", "chain": "monero", "rpc": "http://127.0.0.1:18082/json_rpc", "wallet_file": "main", "wallet_password": "...", "to": "4YourColdMoneroAddress" }
+  ]
+}

@@ -1,0 +1,7 @@
+cryptography>=42
+requests>=2.31
+embit>=0.8
+eth-account>=0.13
+solders>=0.21
+tronpy>=0.5
+xrpl-py>=3.0

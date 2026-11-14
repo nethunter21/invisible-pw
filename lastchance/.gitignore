@@ -1,0 +1,10 @@
+# NEVER commit your sealed vault, plaintext configs or receipts
+model9x
+*.plain.json
+my-config.json
+receipt-*.json
+.venv/
+__pycache__/
+build/
+dist/
+*.spec
