@@ -1,0 +1,111 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no"><meta name="theme-color" content="#17212b"><meta name="apple-mobile-web-app-status-bar-style" content="default"><link rel="apple-touch-icon" href="icon.png"><link rel="icon" href="icon.png">
+<title>Hndl</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Hndl">
+<style>[hidden]{display:none!important}*{box-sizing:border-box}body{margin:0;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+
+/* one-screen app: input view + list view, Telegram-like */
+:root{--bg:#fff;--bg2:#f1f2f6;--fg:#000;--mut:#8a8f98;--acc:#2aabee;--line:#e6e8ec;--ok:#31b545}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#17212b;--bg2:#0e1621;--fg:#f5f5f5;--mut:#708499;--acc:#5eb5f7;--line:#22303d;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#17212b;--bg2:#0e1621;--fg:#f5f5f5;--mut:#708499;--acc:#5eb5f7;--line:#22303d;color-scheme:dark}
+html,body{height:100%}
+body{background:var(--bg);color:var(--fg);font:16px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;-webkit-tap-highlight-color:transparent;display:flex;flex-direction:column;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));overflow:hidden}
+header{display:flex;align-items:center;justify-content:space-between;padding-block:14px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:600;font-size:18px;letter-spacing:-.01em}
+.brand svg{width:30px;height:30px;display:block}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.nav{color:var(--acc);font-size:15px;padding:6px 2px;font-variant-numeric:tabular-nums}
+main{flex:1;min-height:0;display:flex;flex-direction:column}
+#add{flex:1;display:flex;flex-direction:column;justify-content:center;gap:12px;padding-bottom:18vh}
+#in{width:100%;border:0;background:var(--bg2);color:var(--fg);font-size:20px;padding:16px 18px;border-radius:14px;outline:0}
+#in::placeholder{color:var(--mut)}
+#msg{text-align:center;color:var(--mut);font-size:14px;min-height:20px;transition:color .2s}
+#msg.ok{color:var(--ok)}
+#list{flex:1;min-height:0;display:flex;flex-direction:column}
+#q{width:100%;border:0;background:var(--bg2);color:var(--fg);font-size:16px;padding:10px 14px;border-radius:10px;outline:0;margin-bottom:6px}
+ul{list-style:none;margin:0;padding:0;overflow-y:auto;flex:1;-webkit-overflow-scrolling:touch}
+li{display:flex;align-items:center;border-bottom:1px solid var(--line)}
+li .h{flex:1;min-width:0;text-align:left;padding:15px 2px;font-size:17px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+li .h.c{color:var(--ok)}
+li .x{color:var(--mut);padding:10px 4px 10px 14px;font-size:20px;line-height:1}
+.empty{color:var(--mut);text-align:center;padding:40px 0;font-size:15px}
+</style></head><body>
+
+<header>
+  <div class="brand">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#37bbfe"/><stop offset="1" stop-color="#1d93d2"/></linearGradient></defs><rect width="32" height="32" rx="9" fill="url(#g)"/><circle cx="16" cy="16" r="4.2" fill="none" stroke="#fff" stroke-width="2.4"/><path d="M20.2 12v5.6c0 1.6 1 2.6 2.4 2.6s2.4-1 2.4-3.4V16a9 9 0 1 0-4 7.4" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/></svg>
+    Hndl
+  </div>
+  <button class="nav" id="tog">All <span id="n">0</span></button>
+</header>
+
+<main>
+  <section id="add">
+    <input id="in" placeholder="@handle" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="done">
+    <div id="msg">Type and press enter</div>
+  </section>
+  <section id="list" hidden>
+    <input id="q" placeholder="Search" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <ul id="ul"></ul>
+  </section>
+</main>
+
+<script>
+const $=id=>document.getElementById(id),K='hndl';
+let items=[],db=null,col=null;
+try{items=JSON.parse(localStorage.getItem(K))||[]}catch(e){}
+const save=()=>{try{localStorage.setItem(K,JSON.stringify(items))}catch(e){}};
+const norm=s=>{s=s.trim().replace(/^https?:\/\/(t\.me|telegram\.me)\//i,'').replace(/\s+/g,'');if(!s)return'';return s[0]=='@'?s:'@'+s};
+const key=h=>h.toLowerCase().replace(/[^a-z0-9_]/g,'_').slice(0,80)||'_';
+
+function render(){
+  $('n').textContent=items.length;
+  if($('list').hidden)return;
+  const q=$('q').value.trim().toLowerCase(),ul=$('ul');
+  const v=items.filter(i=>!q||i.h.toLowerCase().includes(q));
+  ul.textContent='';
+  if(!v.length){ul.innerHTML='<li class="empty" style="border:0;display:block">'+(items.length?'No match':'Nothing saved yet')+'</li>';return}
+  const f=document.createDocumentFragment();
+  for(const i of v){
+    const li=document.createElement('li');
+    const b=document.createElement('button');b.className='h';b.textContent=i.h;b.onclick=()=>copy(i.h,b);
+    const x=document.createElement('button');x.className='x';x.textContent='×';x.setAttribute('aria-label','Delete '+i.h);x.onclick=()=>del(i.h);
+    li.append(b,x);f.append(li);
+  }
+  ul.append(f);
+}
+function copy(t,b){
+  const done=()=>{b.classList.add('c');b.textContent='Copied';setTimeout(()=>{b.classList.remove('c');b.textContent=t},700)};
+  if(navigator.clipboard)navigator.clipboard.writeText(t).then(done,()=>fallback(t,done));else fallback(t,done);
+}
+function fallback(t,done){const a=document.createElement('textarea');a.value=t;a.style.position='fixed';a.style.opacity='0';document.body.append(a);a.select();try{document.execCommand('copy');done()}catch(e){}a.remove()}
+function del(h){items=items.filter(i=>i.h!==h);save();render();col&&col.doc(key(h)).delete().catch(()=>{})}
+function add(raw){
+  const h=norm(raw),m=$('msg');if(!h)return;
+  if(items.some(i=>i.h.toLowerCase()==h.toLowerCase())){m.className='';m.textContent=h+' already saved';return}
+  const it={h,t:Date.now()};items.unshift(it);save();render();
+  m.className='ok';m.textContent='Saved '+h;clearTimeout(add.t);add.t=setTimeout(()=>{m.className='';m.textContent='Type and press enter'},1400);
+  col&&col.doc(key(h)).set(it).catch(()=>{});
+}
+$('in').addEventListener('keydown',e=>{if(e.key=='Enter'){e.preventDefault();add(e.target.value);e.target.value=''}});
+$('q').addEventListener('input',render);
+$('tog').onclick=()=>{const l=$('list').hidden;$('list').hidden=!l;$('add').hidden=l;$('tog').firstChild.textContent=l?'Add ':'All ';$('n').hidden=l;if(l){$('q').value='';render()}else $('in').focus()};
+render();$('in').focus();
+
+/* sync to your private cloud store when available */
+(async()=>{try{
+  if(!window.claude)return;
+  const [d,u]=await Promise.all([claude.use('db'),claude.use('user')]);if(!d||!u)return;
+  const id=await u.id();if(!id)return;
+  col=d.collection('data/users/'+id);
+  col.orderBy('t','desc').onSnapshot(s=>{
+    const remote=s.docs.map(x=>x.data()).filter(x=>x&&x.h);
+    const seen=new Set(remote.map(x=>x.h.toLowerCase()));
+    const local=items.filter(i=>!seen.has(i.h.toLowerCase()));
+    if(s.metadata&&!s.metadata.fromCache)local.forEach(i=>col.doc(key(i.h)).set(i).catch(()=>{}));
+    items=[...remote,...local].sort((a,b)=>b.t-a.t);save();render();
+  },()=>{});
+}catch(e){}})();
+</script>
+</body></html>
