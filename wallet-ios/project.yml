@@ -11,9 +11,8 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     ENABLE_BITCODE: NO
 packages:
-  WalletCore:
-    url: https://github.com/trustwallet/wallet-core
-    exactVersion: "4.9.3"
+  WalletCoreBinary:
+    path: Packages/WalletCoreBinary
 targets:
   UnseenVault:
     type: application
@@ -24,10 +23,8 @@ targets:
         excludes:
           - Info.plist
     dependencies:
-      - package: WalletCore
+      - package: WalletCoreBinary
         product: WalletCore
-      - package: WalletCore
-        product: WalletCoreSwiftProtobuf
     info:
       path: Resources/Info.plist
       properties:
