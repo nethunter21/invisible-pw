@@ -1,0 +1,79 @@
+name: Build iOS IPA
+
+on:
+  push:
+    branches: ["main", "claude/**"]
+    paths: ["wallet-ios/**", ".github/workflows/build-ipa.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Xcode version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        working-directory: wallet-ios
+        run: xcodegen generate
+
+      - name: Build (unsigned, Release, device)
+        working-directory: wallet-ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project UnseenVault.xcodeproj \
+            -scheme UnseenVault \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee build.log | grep -E "error:|warning: unre|BUILD (SUCCEEDED|FAILED)" || true
+          test -d build/Build/Products/Release-iphoneos/UnseenVault.app || { grep -E "error" build.log | head -80; exit 1; }
+
+      - name: Package IPA
+        working-directory: wallet-ios
+        run: |
+          mkdir -p out/Payload
+          cp -R build/Build/Products/Release-iphoneos/UnseenVault.app out/Payload/
+          cd out
+          zip -qry UnseenVault.ipa Payload
+          shasum -a 256 UnseenVault.ipa | tee UnseenVault.ipa.sha256
+          ls -la
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: UnseenVault-ipa
+          path: |
+            wallet-ios/out/UnseenVault.ipa
+            wallet-ios/out/UnseenVault.ipa.sha256
+
+      - name: Publish release
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: vault-build-${{ github.run_number }}
+          name: Unseen Vault build ${{ github.run_number }}
+          prerelease: true
+          target_commitish: ${{ github.sha }}
+          body: |
+            Unsigned IPA for sideloading with SideStore / AltStore (free Apple ID) — see wallet-ios/INSTALL.md.
+            Commit: ${{ github.sha }}
+            Verify the download: compare the SHA-256 below with `shasum -a 256 UnseenVault.ipa`.
+          files: |
+            wallet-ios/out/UnseenVault.ipa
+            wallet-ios/out/UnseenVault.ipa.sha256
