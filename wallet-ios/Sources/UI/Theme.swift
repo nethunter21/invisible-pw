@@ -192,7 +192,7 @@ final class CaptureMonitor: ObservableObject {
         })
     }
 
-    deinit { tokens.forEach(NotificationCenter.default.removeObserver) }
+    deinit { for t in tokens { NotificationCenter.default.removeObserver(t) } }
 }
 
 struct PrivacyShield: View {

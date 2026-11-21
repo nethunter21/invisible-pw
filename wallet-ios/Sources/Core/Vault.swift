@@ -318,7 +318,7 @@ enum Vault {
                     outPtr.bindMemory(to: UInt8.self).baseAddress, 32)
             }
         }
-        guard status == kCCSuccess else { throw VaultError.corrupted }
+        guard status == Int32(kCCSuccess) else { throw VaultError.corrupted }
         return out
     }
 
