@@ -36,7 +36,7 @@ var webFS embed.FS
 
 const ua = "Mozilla/5.0 (compatible; QuietLens/1.0)"
 
-const appVersion = "quietlens-2.2"
+const appVersion = "quietlens-2.3"
 
 var client = &http.Client{Timeout: 30 * time.Second}
 

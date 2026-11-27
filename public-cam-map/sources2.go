@@ -9,13 +9,16 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
-	"net/url"
+	"net/http"
 	"strings"
+	"sync"
+	"time"
 )
 
 func init() {
 	sources = append(sources,
-		Source{"fr-opale", "Calais & Côte d'Opale — public webcam pages", "FR", "Webcam owners (Viewsurf, Skyline, tourist offices…)", "Links to public pages", "", loadOpale, 1e18},
+		Source{"fr-opale", "Calais & Côte d'Opale — live players", "FR", "Viewsurf / YouTube live", "Embeddable live players", "", loadOpale, 1e18},
+		Source{"fr-vision", "Calais & Coquelles — A16 road cams (shown only when live)", "FR", "Vision-Environnement / DIR Nord", "Public live images", "https://www.vision-environnement.com", loadVision, 30 * time.Minute},
 		Source{"es-dgt", "Spain — DGT traffic cameras", "ES", "Dirección General de Tráfico", "DGT open data (NAP)", "https://nap.dgt.es", loadDGT, 120 * 60e9},
 		Source{"us-wsdot", "Washington State — WSDOT", "US", "Washington State DOT", "Public (WSDOT)", "https://wsdot.wa.gov", loadWSDOT, 120 * 60e9},
 		Source{"ca-drivebc", "British Columbia — DriveBC", "CA", "BC Ministry of Transportation", "Open Government Licence – BC", "https://www.drivebc.ca", loadDriveBC, 120 * 60e9},
@@ -27,63 +30,90 @@ func init() {
 
 // ---------- Calais / Côte d'Opale curated public webcam pages ----------
 
-// Embeddable = the site allows being shown inside another app (checked: no X-Frame-Options
-// / frame-ancestors restriction). Others open in a window placed over the player.
-var embeddableHosts = map[string]bool{"pv.viewsurf.com": true, "calais-dover.com": true, "spotcameras.com": true, "app.paysdes2caps.com": true, "www.letsgopal.com": true, "equihenplage.blogspot.com": true, "www.toutesleswebcams.com": true, "www.ventusky.com": true}
-
+// Calais / Côte d'Opale: ONLY single-camera live feeds that are made to be embedded
+// (Viewsurf's Calais partner player, YouTube live streams). Directory/aggregator pages were
+// removed. Viewsurf's other cameras come from the fr-viewsurf source.
 var opale = []struct {
-	Name string
-	Lat  float64
-	Lon  float64
-	URL  string
-	City string
+	Name  string
+	Lat   float64
+	Lon   float64
+	Embed string // embeddable live player
+	Page  string
+	City  string
 }{
-	{"Calais — La Plage (Viewsurf live player)", 50.9668, 1.8436, "https://pv.viewsurf.com/1400/Calais", "Calais"},
-	{"Calais — Plage & port, ferries to Dover", 50.9685, 1.8520, "https://calais-dover.com/webcams-weather/", "Calais"},
-	{"Calais — View of the beach (SpotCameras)", 50.9672, 1.8380, "https://spotcameras.com/en/cams/Europe/France/18043-Calais-Pas-de-Calais-Hauts-de-France-France-View-of-the-beach", "Calais"},
-	{"Calais — Webcams en direct (Calais-Découvrir)", 50.9513, 1.8587, "https://www.calais-decouvrir.fr/live.html", "Calais"},
-	{"Calais — Plage (WorldCam)", 50.9664, 1.8405, "https://worldcam.eu/webcams/europe/france/25898-calais-beach", "Calais"},
-	{"Calais — Live + timelapse (Webcam Galore)", 50.9675, 1.8460, "https://www.webcamgalore.com/webcam/France/Calais/34684.html", "Calais"},
-	{"Calais — Plage (Webcam Galore archive)", 50.9670, 1.8415, "https://www.webcamgalore.com/webcam/France/Calais/32662.html", "Calais"},
-	{"Calais — Webcam (MeteoHorizon)", 50.9550, 1.8520, "https://www.meteohorizon.com/europe/france/hauts-de-france/pas-de-calais/calais/webcam", "Calais"},
-	{"Calais — Webcam (VaderNu)", 50.9580, 1.8560, "https://www.vadernu.com/europe/france/hauts-de-france/pas-de-calais/calais/webcam", "Calais"},
-	{"Calais — Plage de Calais (Windfinder)", 50.9660, 1.8360, "https://www.windfinder.com/webcams/calais_tide", "Calais"},
-	{"Calais — Buoy / sea view (Windfinder)", 50.9800, 1.8500, "https://www.windfinder.com/webcams/calais_buoy", "Calais"},
-	{"Marck — Calais–Dunkerque airport area (Windfinder)", 50.9620, 1.9540, "https://www.windfinder.com/webcams/calais", "Marck"},
-	{"Calais — Webcams around Calais (meteoblue)", 50.9500, 1.8600, "https://www.meteoblue.com/en/weather/webcams/calais_france_3029162", "Calais"},
-	{"Coquelles — A16 km 85 towards Eurotunnel (traffic)", 50.9370, 1.8180, "https://www.webcam-autoroute.eu/en/traficam/france-a16/14724/nord-pas-de-calais/calais/dunkerque-to-eurotunnel", "Coquelles"},
-	{"Coquelles / Eurotunnel — webcams near the terminal", 50.9320, 1.8060, "https://www.webcam-autoroute.eu/cam%C3%A9ras/eurotunnel", "Coquelles"},
-	{"Sangatte — Plage (SkylineWebcams live)", 50.9465, 1.7525, "https://www.skylinewebcams.com/webcam/france/hauts-de-france/sangatte/plage.html", "Sangatte"},
-	{"Sangatte / Blériot-Plage — Vision-Environnement", 50.9560, 1.7900, "https://www.ventusky.com/webcam-652310077", "Sangatte"},
-	{"Sangatte — Webcam (WebcamExpo)", 50.9450, 1.7560, "https://webcamexpo.com/webcam-sangatte/", "Sangatte"},
-	{"Sangatte — Windfinder webcams", 50.9440, 1.7600, "https://www.windfinder.com/webcams/sangatte", "Sangatte"},
-	{"Cap Blanc-Nez — surf cam (Surf-forecast)", 50.9265, 1.7150, "https://www.surf-forecast.com/breaks/Cap-Blanc-Nez/webcams/latest", "Escalles"},
-	{"Escalles / Cap Blanc-Nez — Windfinder", 50.9170, 1.7150, "https://www.windfinder.com/webcams/escalles_bn", "Escalles"},
-	{"Cap Blanc-Nez — webcams around (meteoblue)", 50.9230, 1.7120, "https://www.meteoblue.com/en/weather/webcams/cap-blanc-nez_france_3032371", "Escalles"},
-	{"Wissant — Caméra vue mer (Pays des 2 Caps)", 50.8870, 1.6630, "https://app.paysdes2caps.com/webcam-live", "Wissant"},
-	{"Wissant — Webcam de la digue (Pays des 2 Caps)", 50.8860, 1.6610, "https://www.paysdes2caps.com/webcam-wissant", "Wissant"},
-	{"Wissant — surf cam (Surf-forecast)", 50.8890, 1.6580, "https://www.surf-forecast.com/breaks/Wissant/webcams/latest", "Wissant"},
-	{"Wimereux — Plage et digue en direct", 50.7695, 1.6060, "https://www.letsgopal.com/en/wimereux-webcam/", "Wimereux"},
-	{"Wimereux — webcams around (meteoblue)", 50.7680, 1.6110, "https://www.meteoblue.com/en/weather/webcams/wimereux_france_2967351", "Wimereux"},
-	{"Équihen-Plage — webcams du littoral Côte d'Opale", 50.6760, 1.5670, "https://equihenplage.blogspot.com/p/webcam-du-littoral-cote-dopale.html", "Équihen-Plage"},
-	{"Le Touquet / Nord-Pas-de-Calais webcams (directory)", 50.5200, 1.5850, "https://www.toutesleswebcams.com/webcams-nord-pas-de-calais.html", "Le Touquet"},
+	{"Calais — La Plage (Viewsurf live)", 50.9668, 1.8436, "https://pv.viewsurf.com/1400/Calais", "https://pv.viewsurf.com/1400/Calais", "Calais"},
+	{"Sangatte — sea front (YouTube live)", 50.9465, 1.7525, "", "https://www.youtube.com/watch?v=tWJUgV37w2A", "Sangatte"},
+	{"Wissant — beach & surf spot (YouTube live)", 50.8865, 1.6620, "https://www.youtube.com/embed/live_stream?channel=UC7IxfHMqwb9_e6r5qa29A4A&autoplay=1&mute=1", "https://www.youtube.com/channel/UC7IxfHMqwb9_e6r5qa29A4A/live", "Wissant"},
 }
 
 func loadOpale() ([]Cam, error) {
 	var out []Cam
 	for i, o := range opale {
-		c := Cam{ID: fmt.Sprintf("opale-%d", i), Lat: o.Lat, Lon: o.Lon, Name: o.Name, Page: o.URL, Kind: "tourism", CC: "FR", City: o.City + ", Pas-de-Calais",
-			Info: "Public webcam page: " + hostOf(o.URL)}
-		if strings.HasPrefix(c.Name, "Coquelles") || strings.Contains(c.Name, "A16") {
-			c.Kind = "traffic"
-		}
-		u, _ := url.Parse(o.URL)
-		if u != nil && embeddableHosts[u.Host] {
-			c.Video, c.VType = o.URL, "iframe"
-		} else {
-			c.NoEmbed = true
+		c := Cam{ID: fmt.Sprintf("opale-%d", i), Lat: o.Lat, Lon: o.Lon, Name: o.Name, Video: o.Embed, VType: "iframe", Page: o.Page,
+			Kind: "tourism", CC: "FR", City: o.City + ", Pas-de-Calais", Info: "Live player: " + hostOf(o.Embed)}
+		if o.Embed == "" { // owner disabled embedding: open its live page in the window over the player
+			c.Video, c.VType, c.NoEmbed = o.Page, "window", true
 		}
 		out = append(out, c)
+	}
+	return out, nil
+}
+
+// ---------- Vision-Environnement road cams around Calais / Coquelles (A16/A216) ----------
+// Each publishes one live image. Only cameras whose image was updated in the last 6 hours
+// are shown, so frozen feeds never appear as "live".
+
+var visionCams = []struct {
+	Slug, Name string
+	Lat, Lon   float64
+}{
+	{"calais-a16-zac-riviere-neuve", "Coquelles / Calais — A16 ZAC Rivière Neuve (Eurotunnel access)", 50.94103, 1.82966},
+	{"coulogne-a16-calais", "Coulogne — A16 Calais", 50.93551, 1.87932},
+	{"coulogne-a216-calais-marck", "Coulogne — A216 Calais port ↔ Marck", 50.94204, 1.90590},
+	{"marck-a16-calais-echangeur-47", "Marck — A16 Calais interchange 47", 50.93643, 1.91459},
+	{"marck-a16-calais-echangeur-47-bis", "Marck — A16 Calais interchange 47 bis", 50.93638, 1.91379},
+	{"marck-a16-guemps", "Marck — A16 Guemps", 50.93474, 1.98467},
+	{"sangatte", "Sangatte — Blériot-Plage", 50.9560, 1.7900},
+	{"wissant", "Wissant", 50.8870, 1.6630},
+	{"wimereux", "Wimereux", 50.7695, 1.6060},
+	{"boulogne", "Boulogne-sur-Mer", 50.7264, 1.5970},
+	{"gravelines", "Gravelines", 50.9870, 2.1280},
+}
+
+func loadVision() ([]Cam, error) {
+	var out []Cam
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	stale := 0
+	for _, v := range visionCams {
+		wg.Add(1)
+		go func(slug, name string, la, lo float64) {
+			defer wg.Done()
+			u := "https://www.vision-environnement.com/live/image/webcam/" + slug + ".jpg"
+			c := http.Client{Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+			req, _ := http.NewRequest("HEAD", u, nil)
+			req.Header.Set("User-Agent", ua)
+			resp, err := c.Do(req)
+			if err != nil {
+				return
+			}
+			resp.Body.Close()
+			lm, _ := http.ParseTime(resp.Header.Get("Last-Modified"))
+			if resp.StatusCode != 200 || lm.IsZero() || time.Since(lm) > 6*time.Hour {
+				mu.Lock()
+				stale++
+				mu.Unlock()
+				return
+			}
+			mu.Lock()
+			out = append(out, Cam{ID: "ve-" + slug, Lat: la, Lon: lo, Name: name, Img: u, Kind: "traffic", CC: "FR", City: "Calais area, Pas-de-Calais", Every: 600, Upd: lm.Format(time.RFC3339),
+				Page: "https://www.vision-environnement.com/", Info: "Vision-Environnement live image"})
+			mu.Unlock()
+		}(v.Slug, v.Name, v.Lat, v.Lon)
+	}
+	wg.Wait()
+	if len(out) == 0 {
+		return nil, fmt.Errorf("all %d Calais-area road cameras currently frozen/offline at the operator (hidden until they update again)", stale)
 	}
 	return out, nil
 }
