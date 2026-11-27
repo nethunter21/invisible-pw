@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Public Cam Map</title>
+<title>Quiet Lens</title>
 <link rel="icon" href="logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="vendor/leaflet.css">
 <link rel="stylesheet" href="vendor/MarkerCluster.css">
@@ -12,10 +12,12 @@
 </head>
 <body>
 <header>
-  <div class="brand"><img src="logo.svg" alt=""><div><b>PUBLIC CAM MAP</b><small>OFFICIAL PUBLIC CAMERAS ONLY</small></div></div>
+  <div class="brand"><img src="logo.svg" alt=""><div><b>QUIET LENS</b><small>GLOBAL WEBCAM INTEL</small></div></div>
   <div class="search"><input id="q" placeholder="Rechercher caméra / ville…  ( / )" autocomplete="off"><div id="qres"></div></div>
   <div class="jump" id="jump"></div>
   <div class="stats"><span>CAMS</span><b id="ncams">—</b><span>IN VIEW</span><b id="nview">—</b></div>
+  <button class="btn" id="frbtn" title="Load every Windy webcam in France (needs free key)">⬇ ALL FRANCE</button>
+  <button class="btn" id="addbtn" title="Add your own public webcam link">+ ADD CAM</button>
   <button class="btn" id="wallbtn" title="Video wall (W)">▦ WALL <em id="wallc"></em></button>
   <button class="btn" id="setbtn" title="Settings & sources">⚙</button>
 </header>
@@ -25,35 +27,63 @@
       <div class="chips" id="types"></div>
       <div class="chips" id="srcs"></div>
     </div>
-    <div class="sec grow"><h4>IN VIEW <span id="sortinfo" class="mut">nearest to centre</span></h4><div id="list"></div></div>
+    <div class="sec grow"><h4>IN VIEW <span class="mut">nearest to centre</span></h4><div id="list"></div></div>
   </aside>
   <div id="mapwrap">
     <div id="map"></div>
     <div class="basesw" id="basesw"></div>
     <div class="maphint" id="hint"></div>
+    <div id="floats"></div>
   </div>
   <aside id="viewer" class="closed">
-    <div class="vh"><b id="vtitle">—</b><button class="x" id="vclose">✕</button></div>
-    <div class="vmedia" id="vmedia"></div>
+    <div class="grip" id="grip" title="Drag to resize"></div>
+    <div class="vh"><b id="vtitle">—</b>
+      <button class="ib" id="vbig" title="Big view (B)">⤢</button>
+      <button class="ib" id="vfloat" title="Float in a window">⧉</button>
+      <button class="ib" id="vfs" title="Fullscreen (F)">⛶</button>
+      <button class="ib" id="vclose" title="Close (Esc)">✕</button></div>
+    <div id="vplayer"></div>
     <div class="vbar" id="vbar"></div>
     <div class="vinfo" id="vinfo"></div>
   </aside>
 </main>
-<div id="wall" class="hidden"><div class="wh"><b>VIDEO WALL</b><div class="seg" id="wallsize"></div><span class="mut">Auto-refresh · click a tile to open · right-click to remove</span><button class="btn" id="wallclear">Clear</button><button class="btn" id="wallclose">✕ Close</button></div><div class="wg" id="wallgrid"></div></div>
-<div id="settings" class="hidden"><div class="sbox">
+
+<div id="wall" class="hidden"><div class="wh"><b>VIDEO WALL</b><div class="seg" id="walllayout"></div>
+  <label class="tgl"><input type="checkbox" id="walllive"> Live players in tiles</label>
+  <span class="mut">Drag tiles to rearrange · ⤢ focus · double-click fullscreen</span>
+  <button class="btn" id="wallfill">Fill from view</button><button class="btn" id="wallclear">Clear</button><button class="btn" id="wallclose">✕ Close</button></div>
+  <div class="wg" id="wallgrid"></div></div>
+
+<div id="settings" class="modal hidden"><div class="sbox">
   <div class="wh"><b>SETTINGS &amp; SOURCES</b><button class="btn" id="setclose">✕</button></div>
   <div class="pad">
-    <h4>WINDY WEBCAMS (OPTIONAL)</h4>
-    <p class="mut">Everything works without a key. A <b>free</b> Windy key adds thousands of public city, beach and mountain webcams (very dense across France, including Pas-de-Calais), with live players. Get one in 1 minute at <a href="https://api.windy.com/keys" target="_blank">api.windy.com/keys</a> (choose “Webcams API”).</p>
-    <div class="row"><input id="wkey" type="password" placeholder="Paste Windy API key (optional)"><button class="btn pri" id="wsave">Save</button><button class="btn" id="wtest">Test</button></div>
+    <h4>WINDY WEBCAMS (OPTIONAL, FREE KEY)</h4>
+    <p class="mut">Works without a key. A free key from <a href="https://api.windy.com/keys" target="_blank">api.windy.com/keys</a> (Webcams API) adds thousands of public webcams with live players. Then press <b>⬇ ALL FRANCE</b> to load every French region at once (cached on disk for 24 h).</p>
+    <div class="row"><input id="wkey" type="password" placeholder="Paste Windy API key"><button class="btn pri" id="wsave">Save</button><button class="btn" id="wtest">Test</button></div>
     <div id="wstatus" class="mut"></div>
-    <h4>IMAGE REFRESH</h4>
-    <div class="row"><select id="refresh"><option value="10">every 10 s</option><option value="20">every 20 s</option><option value="30">every 30 s</option><option value="60">every 60 s</option></select></div>
+    <h4>PLAYER</h4>
+    <div class="row"><label class="mut" style="width:180px;align-self:center">Snapshot refresh</label><select id="refresh"><option value="5">every 5 s</option><option value="10">every 10 s</option><option value="20">every 20 s</option><option value="30">every 30 s</option><option value="60">every 60 s</option></select></div>
+    <div class="row"><label class="mut" style="width:180px;align-self:center">Rewind buffer</label><select id="buffer"><option value="60">60 frames</option><option value="120">120 frames</option><option value="240">240 frames</option></select></div>
+    <h4>MY CAMERAS</h4>
+    <div class="row"><button class="btn" id="exportc">Export my cameras</button><button class="btn" id="importc">Import…</button><input type="file" id="importf" accept=".json" hidden><span class="mut" id="ccount" style="align-self:center"></span></div>
     <h4>SOURCES</h4><div id="srclist"></div>
-    <p class="note">Ethics: this app only shows cameras that their operators deliberately publish (road authorities, cities, tourism webcams listed on OpenStreetMap, Windy). It never scans for or lists private or unsecured cameras. Images remain the property of their operators.</p>
+    <p class="note">Ethics: only cameras that their operators publish (road authorities, cities, tourism webcams) are listed. The app never scans for or lists private or unsecured cameras. Cameras you add yourself must be public webcams.</p>
     <button class="btn danger" id="quit">Quit app</button>
   </div>
 </div></div>
+
+<div id="addcam" class="modal hidden"><div class="sbox" style="width:560px">
+  <div class="wh"><b>ADD A PUBLIC WEBCAM</b><button class="btn" id="addclose">✕</button></div>
+  <div class="pad">
+    <p class="mut">Paste the link of a <b>public</b> webcam: a web page or embed (Skyline, Viewsurf, Skaping, tourism office…), a direct image (.jpg), a video stream (.m3u8) or clip (.mp4).</p>
+    <div class="row"><input id="acname" placeholder="Name (e.g. Calais — Plage)"></div>
+    <div class="row"><input id="acurl" placeholder="https://…"></div>
+    <div class="row"><select id="actype"><option value="auto">Type: auto-detect</option><option value="page">Web page / embed</option><option value="img">Image (refreshing snapshot)</option><option value="hls">Live stream (.m3u8)</option><option value="mp4">Video (.mp4)</option></select></div>
+    <div class="row"><input id="aclat" placeholder="Latitude"><input id="aclon" placeholder="Longitude"><button class="btn" id="acpick">⌖ Pick on map</button></div>
+    <div class="row"><button class="btn pri" id="acsave">Add camera</button><span class="mut" id="acmsg" style="align-self:center"></span></div>
+  </div>
+</div></div>
+
 <script src="vendor/leaflet.js"></script>
 <script src="vendor/leaflet.markercluster.js"></script>
 <script src="app.js"></script>

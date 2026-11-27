@@ -1,4 +1,4 @@
-// Public Cam Map — a lightweight local map of PUBLIC cameras that their operators
+// Quiet Lens (global webcam intel) — a lightweight local map of PUBLIC cameras that their operators
 // (road authorities, cities, tourism offices) deliberately publish. No private or
 // unsecured cameras are ever listed: every source below is an official open-data feed,
 // an OpenStreetMap entry pointing to a public webcam page, or the optional Windy API.
@@ -34,7 +34,7 @@ import (
 //go:embed web
 var webFS embed.FS
 
-const ua = "Mozilla/5.0 (compatible; PublicCamMap/1.0)"
+const ua = "Mozilla/5.0 (compatible; QuietLens/1.0)"
 
 var client = &http.Client{Timeout: 30 * time.Second}
 
@@ -94,6 +94,8 @@ type Cam struct {
 	Info  string  `json:"info,omitempty"`  // road / direction / description
 	Every int     `json:"every,omitempty"` // seconds between image updates (as documented by source)
 	Upd   string  `json:"upd,omitempty"`
+	// Windy player variants (live / day / month / year timelapses)
+	Players map[string]string `json:"players,omitempty"`
 }
 
 type Source struct {
@@ -380,7 +382,7 @@ func loadHK() ([]Cam, error) {
 }
 
 func loadFinland() ([]Cam, error) {
-	b, err := fetch("https://tie.digitraffic.fi/api/weathercam/v1/stations", map[string]string{"Digitraffic-User": "PublicCamMap/1.0"})
+	b, err := fetch("https://tie.digitraffic.fi/api/weathercam/v1/stations", map[string]string{"Digitraffic-User": "QuietLens/1.0"})
 	if err != nil {
 		return nil, err
 	}
@@ -633,102 +635,6 @@ func hostOf(u string) string {
 	return strings.TrimPrefix(p.Host, "www.")
 }
 
-// ---------------- Windy (optional free API key) ----------------
-
-func handleWindy(w http.ResponseWriter, r *http.Request) {
-	key := r.Header.Get("X-Windy-Key")
-	if key == "" {
-		http.Error(w, `{"error":"no key"}`, 400)
-		return
-	}
-	q := r.URL.Query()
-	p := url.Values{}
-	p.Set("limit", "50")
-	p.Set("include", "location,images,player,urls,categories")
-	p.Set("lang", "fr")
-	if bb := q.Get("bbox"); bb != "" {
-		p.Set("bbox", bb)
-	}
-	if cc := q.Get("countries"); cc != "" {
-		p.Set("countries", cc)
-	}
-	off, _ := strconv.Atoi(q.Get("offset"))
-	if off > 1000 {
-		off = 1000
-	}
-	p.Set("offset", strconv.Itoa(off))
-	p.Set("sortKey", "popularity")
-	p.Set("sortDirection", "desc")
-	b, err := fetch("https://api.windy.com/webcams/api/v3/webcams?"+p.Encode(), map[string]string{"x-windy-api-key": key})
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(502)
-		json.NewEncoder(w).Encode(map[string]string{"error": "Windy: " + err.Error()})
-		return
-	}
-	var d struct {
-		Total   int `json:"total"`
-		Webcams []struct {
-			ID         int64                 `json:"webcamId"`
-			Title      string                `json:"title"`
-			Status     string                `json:"status"`
-			LastUpdate string                `json:"lastUpdatedOn"`
-			Categories []struct{ ID string } `json:"categories"`
-			Images     struct {
-				Current map[string]string `json:"current"`
-			} `json:"images"`
-			Location struct {
-				Lat     float64 `json:"latitude"`
-				Lon     float64 `json:"longitude"`
-				City    string  `json:"city"`
-				Region  string  `json:"region"`
-				Country string  `json:"country"`
-				CC      string  `json:"country_code"`
-			} `json:"location"`
-			Player map[string]string `json:"player"`
-			URLs   struct {
-				Detail string `json:"detail"`
-			} `json:"urls"`
-		} `json:"webcams"`
-	}
-	if err := json.Unmarshal(b, &d); err != nil {
-		http.Error(w, `{"error":"bad Windy reply"}`, 502)
-		return
-	}
-	out := struct {
-		Total int   `json:"total"`
-		Cams  []Cam `json:"cams"`
-	}{Total: d.Total}
-	for _, c := range d.Webcams {
-		if c.Status != "" && c.Status != "active" {
-			continue
-		}
-		kind := "city"
-		for _, cat := range c.Categories {
-			switch cat.ID {
-			case "traffic":
-				kind = "traffic"
-			case "beach", "mountain", "landscape", "lake", "coast", "village", "forest":
-				if kind == "city" {
-					kind = "tourism"
-				}
-			}
-		}
-		img := c.Images.Current["preview"]
-		if img == "" {
-			img = c.Images.Current["thumbnail"]
-		}
-		live := c.Player["live"]
-		if live == "" {
-			live = c.Player["day"]
-		}
-		out.Cams = append(out.Cams, Cam{ID: fmt.Sprintf("windy-%d", c.ID), Src: "windy", Lat: c.Location.Lat, Lon: c.Location.Lon, Name: c.Title, Img: img, Video: live, VType: "iframe",
-			Page: c.URLs.Detail, Kind: kind, CC: c.Location.CC, City: strings.Trim(c.Location.City+", "+c.Location.Region, ", "), Upd: c.LastUpdate})
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(out)
-}
-
 // ---------------- HLS proxy (Caltrans live streams; adds CORS-free playback) ----------------
 
 func handleHLS(w http.ResponseWriter, r *http.Request) {
@@ -845,6 +751,9 @@ func main() {
 	mux.HandleFunc("/api/sources", handleSources)
 	mux.HandleFunc("/api/osm", handleOSM)
 	mux.HandleFunc("/api/windy", handleWindy)
+	mux.HandleFunc("/api/windy/one", handleWindyOne)
+	mux.HandleFunc("/api/windy/france", handleWindyFrance)
+	mux.HandleFunc("/api/img", handleImg)
 	mux.HandleFunc("/api/hls", handleHLS)
 	mux.HandleFunc("/api/heartbeat", func(w http.ResponseWriter, r *http.Request) { lastBeat.Store(time.Now().Unix()) })
 	mux.HandleFunc("/api/quit", func(w http.ResponseWriter, r *http.Request) {
@@ -853,6 +762,7 @@ func main() {
 		}
 	})
 	mux.Handle("/", http.FileServer(http.FS(sub)))
+	loadSweepCache()
 	go func() { // warm the cache
 		for _, s := range sources {
 			go loadSource(s)
@@ -869,7 +779,7 @@ func main() {
 			}
 		}()
 	}
-	log.Printf("Public Cam Map at %s", pageURL)
+	log.Printf("Quiet Lens at %s", pageURL)
 	log.Fatal(http.Serve(ln, mux))
 }
 
