@@ -30,6 +30,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements.txt pyinstaller
+          # rapidocr pulls opencv-python 5.x, which dropped Haar cascades: force the 4.x headless build
+          pip uninstall -y opencv-python opencv-python-headless
+          pip install --no-deps "opencv-python-headless>=4.8,<5"
+          python -c "import cv2; assert hasattr(cv2, 'CascadeClassifier'), cv2.__version__; print('cv2', cv2.__version__)"
 
       - name: Offline tests (tiny random CLIP, OCR, EXIF, sun maths)
         run: |

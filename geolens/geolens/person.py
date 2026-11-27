@@ -17,6 +17,8 @@ def _load():
     global _cascades
     if _cascades is None:
         import cv2
+        if not hasattr(cv2, "CascadeClassifier"):
+            raise RuntimeError(f"OpenCV {cv2.__version__} has no Haar cascades — install opencv-python-headless<5")
         base = cv2.data.haarcascades
         _cascades = [cv2.CascadeClassifier(base + f) for f in
                      ("haarcascade_frontalface_default.xml", "haarcascade_profileface.xml")]

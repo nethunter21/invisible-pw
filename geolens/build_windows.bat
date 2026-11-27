@@ -10,6 +10,8 @@ call .venv\Scripts\activate.bat
 python -m pip install --upgrade pip
 pip install torch --index-url https://download.pytorch.org/whl/cpu || goto :err
 pip install -r requirements.txt pyinstaller || goto :err
+pip uninstall -y opencv-python opencv-python-headless
+pip install --no-deps "opencv-python-headless>=4.8,<5" || goto :err
 
 REM Intermediate files go to %TEMP% so no half-built GeoLens.exe is left lying around in .\build
 set WORK=%TEMP%\geolens_pyi_work
