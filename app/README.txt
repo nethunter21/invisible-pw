@@ -13,7 +13,11 @@ RUN
 
 USE
   • IMPORT DB (top-right) or drag files onto the Databases tab.
-    Supported: .csv .tsv .json .ndjson .xlsx .xls .db .sqlite
+    Supported: .csv .tsv .txt .log .json .ndjson .xlsx .xls .db .sqlite
+    Delimiter is auto-detected per file: comma, tab, semicolon, pipe or
+    colon (combo lists like  user@mail.com:password ). URLs are protected —
+    the colons in  https://host:8080/path  are never mistaken for separators.
+    Columns with no header row are auto-named from their detected type.
   • Column types (email / phone / name / account_id / …) are auto-detected;
     identity fields are used to link records. Rename a dataset on import.
   • DATABASES  — every source, schema, per-field fill/distinct stats.

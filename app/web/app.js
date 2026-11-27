@@ -64,7 +64,7 @@ async function doImport(){
 function handleImport(res){
   if(res&&res.error){toast("Import failed: "+res.error,true);return;}
   if(!res||!res.length){return;}
-  let ok=0;res.forEach(r=>{if(r.error){toast("✕ "+r.error,true);}else{ok++;toast("✓ Indexed "+r.dataset.name+" — "+fmt(r.dataset.rows)+" rows");}});
+  let ok=0;res.forEach(r=>{if(r.error){toast("✕ "+r.error,true);}else{ok++;toast("✓ Indexed "+r.dataset.name+" — "+fmt(r.dataset.rows)+" rows · "+r.dataset.cols+" cols");}});
   if(ok)go(STATE.view==="dash"?"db":STATE.view);
 }
 
@@ -126,7 +126,7 @@ async function renderDBs(){
   const v=$("#view");v.innerHTML="";
   v.append(shead("Database Registry",`${STATE.datasets.length} SOURCES`));
 
-  const drop=el("div","drop","⭱ &nbsp; DROP CSV · TSV · JSON · XLSX · SQLITE FILES HERE &nbsp;—&nbsp; OR USE IMPORT DB");
+  const drop=el("div","drop","⭱ &nbsp; DROP CSV · TSV · TXT · JSON · XLSX · SQLITE · COMBO LISTS &nbsp;—&nbsp; DELIMITER AUTO-DETECTED ( , ; | TAB : )");
   wireDrop(drop);v.append(drop);
 
   if(!STATE.datasets.length){v.append(el("div","empty","NO DATABASES LOADED · IMPORT A SOURCE TO BEGIN"));return;}

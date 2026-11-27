@@ -12,30 +12,50 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
-// parseFile turns a supported file into (header, rows). Auto-detects format.
+var errEmpty = fmt.Errorf("empty file")
+
+// parseFile turns a supported file into (header, rows). It auto-detects both the
+// file format and, for text files, the delimiter (comma, tab, semicolon, pipe,
+// or colon — URL-safe), falling back to a single column only when nothing splits.
 func parseFile(path string, raw []byte) (header []string, rows [][]string, err error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
-	case ".csv":
-		return parseDelimited(raw, ',')
-	case ".tsv", ".tab":
-		return parseDelimited(raw, '\t')
 	case ".json", ".ndjson":
 		return parseJSON(raw)
 	case ".xlsx", ".xlsm", ".xls":
 		return parseXLSX(path, raw)
 	case ".db", ".sqlite", ".sqlite3":
 		return parseSQLite(path)
+	case ".csv", ".tsv", ".tab":
+		// try the strict RFC-4180 reader first (handles quoted delimiters);
+		// if it collapses to a single column the real delimiter differs, so sniff.
+		sep := ','
+		if ext != ".csv" {
+			sep = '\t'
+		}
+		if h, r, e := parseDelimited(raw, sep); e == nil && len(h) >= 2 {
+			return h, r, nil
+		}
+		return sniffDelimited(raw)
 	default:
-		// sniff: try json, then comma, then tab
-		if h, r, e := parseJSON(raw); e == nil && len(h) > 0 {
-			return h, r, nil
+		// unknown / .txt / .log / combo lists: try json, else sniff the delimiter.
+		if looksJSON(raw) {
+			if h, r, e := parseJSON(raw); e == nil && len(h) > 0 {
+				return h, r, nil
+			}
 		}
-		if h, r, e := parseDelimited(raw, ','); e == nil && len(h) > 1 {
-			return h, r, nil
-		}
-		return parseDelimited(raw, '\t')
+		return sniffDelimited(raw)
 	}
+}
+
+func looksJSON(raw []byte) bool {
+	for _, b := range raw {
+		if b == ' ' || b == '\n' || b == '\r' || b == '\t' {
+			continue
+		}
+		return b == '{' || b == '['
+	}
+	return false
 }
 
 func parseDelimited(raw []byte, sep rune) ([]string, [][]string, error) {
