@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>VAULTSEARCH</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+<div class="app">
+  <!-- SIDEBAR -->
+  <aside class="side">
+    <div class="brand">
+      <div class="mark"><span class="dot"></span>VAULT<b>SEARCH</b></div>
+      <div class="sub">Client Intelligence Console</div>
+    </div>
+    <nav class="nav" id="nav">
+      <button data-view="dash" class="on"><span class="ic">◈</span>Dashboard</button>
+      <button data-view="db"><span class="ic">▤</span>Databases</button>
+      <button data-view="search"><span class="ic">⌕</span>Search</button>
+      <button data-view="conn"><span class="ic">⟐</span>Connector</button>
+      <button data-view="integ"><span class="ic">⬡</span>Integrity</button>
+    </nav>
+    <div class="sysbox">
+      <div class="row"><span class="k">ENGINE</span><span class="v">LOCAL</span></div>
+      <div class="row"><span class="k">STORAGE</span><span class="v">ENCRYPTED·FS</span></div>
+      <div class="row"><span class="k">NETWORK</span><span class="v">OFFLINE</span></div>
+      <div class="row"><span class="k">BUILD</span><span class="v" id="ver">v1.0.0</span></div>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <main class="main">
+    <div class="topbar">
+      <div class="title">// <span id="crumb">DASHBOARD</span> <span class="tag" id="crumbTag"></span></div>
+      <div class="spacer"></div>
+      <div class="pill"><span class="dot"></span><b id="pStat">0</b>&nbsp;DATASETS</div>
+      <div class="pill"><b id="pRec">0</b>&nbsp;RECORDS</div>
+      <div class="pill"><b id="pIdx">0</b>&nbsp;INDEXED KEYS</div>
+      <button class="btn primary" id="importBtn"><span>⭱</span> Import DB</button>
+    </div>
+    <section class="view" id="view"></section>
+  </main>
+</div>
+
+<!-- record drawer -->
+<div class="drawer" id="drawer">
+  <div class="dh"><h3 id="drawerTitle">RECORD</h3><button class="xbtn" id="drawerX">✕</button></div>
+  <div class="db" id="drawerBody"></div>
+</div>
+
+<div class="toast-wrap" id="toasts"></div>
+<div class="scan"></div>
+<script src="app.js"></script>
+</body>
+</html>
