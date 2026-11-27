@@ -36,6 +36,8 @@ var webFS embed.FS
 
 const ua = "Mozilla/5.0 (compatible; QuietLens/1.0)"
 
+const appVersion = "quietlens-2.1"
+
 var client = &http.Client{Timeout: 30 * time.Second}
 
 func fetch(u string, hdr map[string]string) ([]byte, error) {
@@ -734,8 +736,18 @@ func main() {
 	pageURL := "http://" + addr + "/"
 	if c, err := net.DialTimeout("tcp", addr, 400*time.Millisecond); err == nil {
 		c.Close()
-		openUI(pageURL)
-		return
+		// Same version already running → just open it. Older build (or the former
+		// "Public Cam Map") → ask it to quit so this version takes over.
+		if r, err := http.Get(pageURL + "api/version"); err == nil {
+			b, _ := io.ReadAll(r.Body)
+			r.Body.Close()
+			if strings.TrimSpace(string(b)) == appVersion {
+				openUI(pageURL)
+				return
+			}
+		}
+		http.Post(pageURL+"api/quit", "text/plain", nil)
+		time.Sleep(1200 * time.Millisecond)
 	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -761,7 +773,12 @@ func main() {
 			go func() { time.Sleep(200 * time.Millisecond); os.Exit(0) }()
 		}
 	})
-	mux.Handle("/", http.FileServer(http.FS(sub)))
+	mux.HandleFunc("/api/version", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(appVersion)) })
+	fsrv := http.FileServer(http.FS(sub))
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		fsrv.ServeHTTP(w, r)
+	}))
 	loadSweepCache()
 	go func() { // warm the cache
 		for _, s := range sources {

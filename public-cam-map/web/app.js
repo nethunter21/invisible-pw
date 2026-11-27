@@ -6,10 +6,10 @@ const store = { get(k, d) { try { const v = localStorage.getItem("pcm." + k); re
 async function api(p, opt) { const r = await fetch(p, Object.assign({ cache: "no-store" }, opt)); if (!r.ok) { let m = "HTTP " + r.status; try { m = (await r.json()).error || m; } catch { } throw new Error(m); } return r.json(); }
 const wkey = () => store.get("wkey", "");
 const WH = () => ({ headers: { "X-Windy-Key": wkey() } });
-const CC = { FR: "France", GB: "United Kingdom", US: "United States", HK: "Hong Kong", FI: "Finland", SG: "Singapore", AU: "Australia", NZ: "New Zealand" };
+const CC = { ES: "Spain", CA: "Canada", IS: "Iceland", FR: "France", GB: "United Kingdom", US: "United States", HK: "Hong Kong", FI: "Finland", SG: "Singapore", AU: "Australia", NZ: "New Zealand" };
 const TYPES = { video: ["LIVE / VIDEO", "#ff3b4e"], snap: ["SNAPSHOT", "#39c5cf"], page: ["WEB PAGE", "#f0a43a"], windy: ["WINDY LIVE", "#a371f7"], custom: ["MY CAMS", "#2bd67b"] };
 const camType = c => c.src === "custom" ? "custom" : c.src === "windy" ? "windy" : c.video ? "video" : c.img ? "snap" : "page";
-const shortSrc = k => ({ "fr-lyon": "🇫🇷 Lyon", "fr-grenoble": "🇫🇷 Grenoble", osm: "OSM webcams", windy: "Windy", custom: "My cams", "uk-tfl": "London", "us-nyc": "New York", "us-caltrans": "California", "hk-td": "Hong Kong", "fi-digitraffic": "Finland", "sg-lta": "Singapore", "au-nsw": "Sydney/NSW", "nz-nzta": "New Zealand" }[k] || k);
+const shortSrc = k => ({ "fr-opale": "🇫🇷 Calais & Opale", "es-dgt": "Spain", "us-wsdot": "Washington", "ca-drivebc": "British Columbia", "ca-quebec": "Québec", "us-maryland": "Maryland", "is-vegagerdin": "Iceland", "fr-lyon": "🇫🇷 Lyon", "fr-grenoble": "🇫🇷 Grenoble", osm: "OSM webcams", windy: "Windy", custom: "My cams", "uk-tfl": "London", "us-nyc": "New York", "us-caltrans": "California", "hk-td": "Hong Kong", "fi-digitraffic": "Finland", "sg-lta": "Singapore", "au-nsw": "Sydney/NSW", "nz-nzta": "New Zealand" }[k] || k);
 
 /* ---------------- state ---------------- */
 const CAMS = new Map(); let SOURCES = [];
@@ -141,7 +141,7 @@ function createPlayer(root, cam, opt = {}) {
   const badge = (txt, cls) => { let b = $(".badge", pm); if (!b) { b = document.createElement("div"); pm.appendChild(b); } b.className = "badge " + cls; b.innerHTML = cls === "live" ? `<i></i>${txt}` : txt; };
   const tsl = t => { let s = $(".ts", pm); if (!s) { s = document.createElement("div"); s.className = "ts"; pm.appendChild(s); } s.textContent = t; };
   function stop() { clearInterval(P.timer); P.timer = null; if (P.hls) { P.hls.destroy(); P.hls = null; } }
-  function modeSel() { return modes.length > 1 ? `<select class="msel">${modes.map(m => `<option value="${m}" ${m === P.mode ? "selected" : ""}>${{ img: "Snapshot", hls: "Live stream", mp4: "Video clip", windy: "Live player", page: "Web page" }[m]}</option>`).join("")}</select>` : ""; }
+  function modeSel() { return modes.length > 1 ? `<select class="msel">${modes.map(m => `<option value="${m}" ${m === P.mode ? "selected" : ""}>${{ img: "Snapshot", hls: "Live stream", mp4: "Video clip", windy: "Live player", iframe: "Live player", page: "Web page" }[m]}</option>`).join("")}</select>` : ""; }
   function render() {
     stop(); P.live = true;
     if (P.mode === "img") renderImg(); else if (P.mode === "hls") renderHls(); else if (P.mode === "mp4") renderMp4(); else if (P.mode === "windy") renderWindy(); else renderPage();
@@ -216,6 +216,7 @@ function createPlayer(root, cam, opt = {}) {
   }
   // ---- Windy embedded player: live / day / month / year ----
   function renderWindy(kind = "live") {
+    if (cam.src !== "windy") { pm.innerHTML = `<iframe src="${h(cam.video)}" allow="autoplay; fullscreen" allowfullscreen></iframe>`; badge("LIVE", "live"); ctl.innerHTML = `<button class="golive on" title="Reconnect to live (L)">● LIVE</button><button class="popb">Open in window ↗</button>${modeSel()}<span class="lbl">official live player</span>`; $(".golive", ctl).onclick = () => renderWindy(); $(".popb", ctl).onclick = () => popWin(cam.video); return; }
     const pl = cam.players || {}; const opts = ["live", "day", "month", "year"].filter(k => pl[k]);
     if (!opts.length && cam.video) opts.push("live");
     if (!opts.includes(kind)) kind = opts[0];
