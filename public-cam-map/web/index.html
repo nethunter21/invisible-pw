@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Public Cam Map</title>
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="vendor/leaflet.css">
+<link rel="stylesheet" href="vendor/MarkerCluster.css">
+<link rel="stylesheet" href="vendor/MarkerCluster.Default.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand"><img src="logo.svg" alt=""><div><b>PUBLIC CAM MAP</b><small>OFFICIAL PUBLIC CAMERAS ONLY</small></div></div>
+  <div class="search"><input id="q" placeholder="Rechercher caméra / ville…  ( / )" autocomplete="off"><div id="qres"></div></div>
+  <div class="jump" id="jump"></div>
+  <div class="stats"><span>CAMS</span><b id="ncams">—</b><span>IN VIEW</span><b id="nview">—</b></div>
+  <button class="btn" id="wallbtn" title="Video wall (W)">▦ WALL <em id="wallc"></em></button>
+  <button class="btn" id="setbtn" title="Settings & sources">⚙</button>
+</header>
+<main>
+  <aside id="side">
+    <div class="sec"><h4>FILTERS</h4>
+      <div class="chips" id="types"></div>
+      <div class="chips" id="srcs"></div>
+    </div>
+    <div class="sec grow"><h4>IN VIEW <span id="sortinfo" class="mut">nearest to centre</span></h4><div id="list"></div></div>
+  </aside>
+  <div id="mapwrap">
+    <div id="map"></div>
+    <div class="basesw" id="basesw"></div>
+    <div class="maphint" id="hint"></div>
+  </div>
+  <aside id="viewer" class="closed">
+    <div class="vh"><b id="vtitle">—</b><button class="x" id="vclose">✕</button></div>
+    <div class="vmedia" id="vmedia"></div>
+    <div class="vbar" id="vbar"></div>
+    <div class="vinfo" id="vinfo"></div>
+  </aside>
+</main>
+<div id="wall" class="hidden"><div class="wh"><b>VIDEO WALL</b><div class="seg" id="wallsize"></div><span class="mut">Auto-refresh · click a tile to open · right-click to remove</span><button class="btn" id="wallclear">Clear</button><button class="btn" id="wallclose">✕ Close</button></div><div class="wg" id="wallgrid"></div></div>
+<div id="settings" class="hidden"><div class="sbox">
+  <div class="wh"><b>SETTINGS &amp; SOURCES</b><button class="btn" id="setclose">✕</button></div>
+  <div class="pad">
+    <h4>WINDY WEBCAMS (OPTIONAL)</h4>
+    <p class="mut">Everything works without a key. A <b>free</b> Windy key adds thousands of public city, beach and mountain webcams (very dense across France, including Pas-de-Calais), with live players. Get one in 1 minute at <a href="https://api.windy.com/keys" target="_blank">api.windy.com/keys</a> (choose “Webcams API”).</p>
+    <div class="row"><input id="wkey" type="password" placeholder="Paste Windy API key (optional)"><button class="btn pri" id="wsave">Save</button><button class="btn" id="wtest">Test</button></div>
+    <div id="wstatus" class="mut"></div>
+    <h4>IMAGE REFRESH</h4>
+    <div class="row"><select id="refresh"><option value="10">every 10 s</option><option value="20">every 20 s</option><option value="30">every 30 s</option><option value="60">every 60 s</option></select></div>
+    <h4>SOURCES</h4><div id="srclist"></div>
+    <p class="note">Ethics: this app only shows cameras that their operators deliberately publish (road authorities, cities, tourism webcams listed on OpenStreetMap, Windy). It never scans for or lists private or unsecured cameras. Images remain the property of their operators.</p>
+    <button class="btn danger" id="quit">Quit app</button>
+  </div>
+</div></div>
+<script src="vendor/leaflet.js"></script>
+<script src="vendor/leaflet.markercluster.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
