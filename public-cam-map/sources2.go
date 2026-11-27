@@ -9,6 +9,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 )
 
@@ -26,6 +27,10 @@ func init() {
 
 // ---------- Calais / Côte d'Opale curated public webcam pages ----------
 
+// Embeddable = the site allows being shown inside another app (checked: no X-Frame-Options
+// / frame-ancestors restriction). Others open in a window placed over the player.
+var embeddableHosts = map[string]bool{"pv.viewsurf.com": true, "calais-dover.com": true, "spotcameras.com": true, "app.paysdes2caps.com": true, "www.letsgopal.com": true, "equihenplage.blogspot.com": true, "www.toutesleswebcams.com": true, "www.ventusky.com": true}
+
 var opale = []struct {
 	Name string
 	Lat  float64
@@ -33,57 +38,52 @@ var opale = []struct {
 	URL  string
 	City string
 }{
-	{"Calais — La Plage (Viewsurf live)", 50.9668, 1.8436, "https://pv.viewsurf.com/1400/Calais", "Calais"},
-	{"Calais — Viewsurf webcams (all Calais views)", 50.9660, 1.8470, "https://m.viewsurf.com/univers/plage/pays/France/region/Nord-Pas-de-Calais/ville/Calais", "Calais"},
+	{"Calais — La Plage (Viewsurf live player)", 50.9668, 1.8436, "https://pv.viewsurf.com/1400/Calais", "Calais"},
 	{"Calais — Plage & port, ferries to Dover", 50.9685, 1.8520, "https://calais-dover.com/webcams-weather/", "Calais"},
-	{"Calais — Webcams en direct (Calais-Découvrir)", 50.9513, 1.8587, "https://www.calais-decouvrir.fr/live.html", "Calais"},
 	{"Calais — View of the beach (SpotCameras)", 50.9672, 1.8380, "https://spotcameras.com/en/cams/Europe/France/18043-Calais-Pas-de-Calais-Hauts-de-France-France-View-of-the-beach", "Calais"},
+	{"Calais — Webcams en direct (Calais-Découvrir)", 50.9513, 1.8587, "https://www.calais-decouvrir.fr/live.html", "Calais"},
 	{"Calais — Plage (WorldCam)", 50.9664, 1.8405, "https://worldcam.eu/webcams/europe/france/25898-calais-beach", "Calais"},
 	{"Calais — Live + timelapse (Webcam Galore)", 50.9675, 1.8460, "https://www.webcamgalore.com/webcam/France/Calais/34684.html", "Calais"},
 	{"Calais — Plage (Webcam Galore archive)", 50.9670, 1.8415, "https://www.webcamgalore.com/webcam/France/Calais/32662.html", "Calais"},
-	{"Calais — A216 towards the port (traffic)", 50.9510, 1.8960, "https://www.webcam-autoroute.eu/en/cam%C3%A9ras/calais", "Calais"},
 	{"Calais — Webcam (MeteoHorizon)", 50.9550, 1.8520, "https://www.meteohorizon.com/europe/france/hauts-de-france/pas-de-calais/calais/webcam", "Calais"},
 	{"Calais — Webcam (VaderNu)", 50.9580, 1.8560, "https://www.vadernu.com/europe/france/hauts-de-france/pas-de-calais/calais/webcam", "Calais"},
 	{"Calais — Plage de Calais (Windfinder)", 50.9660, 1.8360, "https://www.windfinder.com/webcams/calais_tide", "Calais"},
 	{"Calais — Buoy / sea view (Windfinder)", 50.9800, 1.8500, "https://www.windfinder.com/webcams/calais_buoy", "Calais"},
-	{"Calais–Dunkerque airport area (Windfinder)", 50.9620, 1.9540, "https://www.windfinder.com/webcams/calais", "Marck"},
+	{"Marck — Calais–Dunkerque airport area (Windfinder)", 50.9620, 1.9540, "https://www.windfinder.com/webcams/calais", "Marck"},
 	{"Calais — Webcams around Calais (meteoblue)", 50.9500, 1.8600, "https://www.meteoblue.com/en/weather/webcams/calais_france_3029162", "Calais"},
-	{"Calais — Webcams in Calais (Outdooractive)", 50.9490, 1.8700, "https://www.outdooractive.com/en/webcams/calais/webcams-in-calais/240895205/", "Calais"},
+	{"Coquelles — A16 km 85 towards Eurotunnel (traffic)", 50.9370, 1.8180, "https://www.webcam-autoroute.eu/en/traficam/france-a16/14724/nord-pas-de-calais/calais/dunkerque-to-eurotunnel", "Coquelles"},
+	{"Coquelles / Eurotunnel — webcams near the terminal", 50.9320, 1.8060, "https://www.webcam-autoroute.eu/cam%C3%A9ras/eurotunnel", "Coquelles"},
 	{"Sangatte — Plage (SkylineWebcams live)", 50.9465, 1.7525, "https://www.skylinewebcams.com/webcam/france/hauts-de-france/sangatte/plage.html", "Sangatte"},
 	{"Sangatte / Blériot-Plage — Vision-Environnement", 50.9560, 1.7900, "https://www.ventusky.com/webcam-652310077", "Sangatte"},
 	{"Sangatte — Webcam (WebcamExpo)", 50.9450, 1.7560, "https://webcamexpo.com/webcam-sangatte/", "Sangatte"},
-	{"Sangatte — View of the beach (Web Cam Network)", 50.9470, 1.7480, "https://www.the-webcam-network.com/webcam/France/Sangatte/1538.html", "Sangatte"},
 	{"Sangatte — Windfinder webcams", 50.9440, 1.7600, "https://www.windfinder.com/webcams/sangatte", "Sangatte"},
 	{"Cap Blanc-Nez — surf cam (Surf-forecast)", 50.9265, 1.7150, "https://www.surf-forecast.com/breaks/Cap-Blanc-Nez/webcams/latest", "Escalles"},
 	{"Escalles / Cap Blanc-Nez — Windfinder", 50.9170, 1.7150, "https://www.windfinder.com/webcams/escalles_bn", "Escalles"},
 	{"Cap Blanc-Nez — webcams around (meteoblue)", 50.9230, 1.7120, "https://www.meteoblue.com/en/weather/webcams/cap-blanc-nez_france_3032371", "Escalles"},
-	{"Wissant — Webcam live de la digue (Pays des 2 Caps)", 50.8860, 1.6610, "https://www.paysdes2caps.com/webcam-wissant", "Wissant"},
-	{"Wissant — Caméra vue mer (app Pays des 2 Caps)", 50.8870, 1.6630, "https://app.paysdes2caps.com/webcam-live", "Wissant"},
+	{"Wissant — Caméra vue mer (Pays des 2 Caps)", 50.8870, 1.6630, "https://app.paysdes2caps.com/webcam-live", "Wissant"},
+	{"Wissant — Webcam de la digue (Pays des 2 Caps)", 50.8860, 1.6610, "https://www.paysdes2caps.com/webcam-wissant", "Wissant"},
 	{"Wissant — surf cam (Surf-forecast)", 50.8890, 1.6580, "https://www.surf-forecast.com/breaks/Wissant/webcams/latest", "Wissant"},
 	{"Wimereux — Plage et digue en direct", 50.7695, 1.6060, "https://www.letsgopal.com/en/wimereux-webcam/", "Wimereux"},
-	{"Wimereux — Beach (BalticLiveCam)", 50.7710, 1.6040, "https://balticlivecam.com/cameras/france/wimereux/wimereux-beach", "Wimereux"},
 	{"Wimereux — webcams around (meteoblue)", 50.7680, 1.6110, "https://www.meteoblue.com/en/weather/webcams/wimereux_france_2967351", "Wimereux"},
 	{"Équihen-Plage — webcams du littoral Côte d'Opale", 50.6760, 1.5670, "https://equihenplage.blogspot.com/p/webcam-du-littoral-cote-dopale.html", "Équihen-Plage"},
 	{"Le Touquet / Nord-Pas-de-Calais webcams (directory)", 50.5200, 1.5850, "https://www.toutesleswebcams.com/webcams-nord-pas-de-calais.html", "Le Touquet"},
-	{"Dunkerque — Live (Viewsurf)", 51.0530, 2.3920, "https://viewsurf.com/univers/surf/vue/16806-france-nord-pas-de-calais-dunkerque-live", "Dunkerque"},
-	{"Dunkerque — Mer ouest (Viewsurf)", 51.0520, 2.3850, "https://viewsurf.com/univers/surf/vue/16816-france-nord-pas-de-calais-dunkerque-mer-ouest", "Dunkerque"},
-	{"Dunkerque — La passerelle (Viewsurf)", 51.0460, 2.3780, "https://mobile.viewsurf.com/univers/plage/vue/19212-1257489028-france-nord-pas-de-calais-dunkerque-la-passerelle", "Dunkerque"},
-	{"Dunkerque — Port de Dunkerque (Viewsurf)", 51.0380, 2.3670, "https://viewsurf.com/univers/plage/vue/16808-france-nord-pas-de-calais-dunkerque-port-de-dunkerque", "Dunkerque"},
-	{"Leffrinckoucke (Viewsurf)", 51.0640, 2.4520, "https://mobile.viewsurf.com/univers/plage/vue/16810-france-nord-pas-de-calais-dunkerque-leffrinckoucke", "Leffrinckoucke"},
-	{"Zuydcoote — Panoramique HD (Viewsurf)", 51.0760, 2.4900, "https://m.viewsurf.com/univers/plage/vue/18126-1161041964-france-nord-pas-de-calais-zuydcoote-panoramique-hd", "Zuydcoote"},
-	{"Bray-Dunes — Live (Viewsurf)", 51.0870, 2.5200, "https://viewsurf.com/univers/plage/vue/16790-france-nord-pas-de-calais-bray-dunes-live", "Bray-Dunes"},
-	{"Bray-Dunes — Digue Est (Viewsurf)", 51.0880, 2.5260, "https://m.viewsurf.com/univers/plage/vue/16800-1061240514-france-nord-pas-de-calais-bray-dunes-digue-est", "Bray-Dunes"},
-	{"Bray-Dunes — Digue Ouest (Viewsurf)", 51.0860, 2.5140, "https://www.viewsurf.com/univers/plage/vue/16802-france-nord-pas-de-calais-bray-dunes-digue-ouest", "Bray-Dunes"},
-	{"Bray-Dunes — Mer Est (Viewsurf)", 51.0895, 2.5240, "https://www.viewsurf.com/univers/plage/vue/16796-france-nord-pas-de-calais-bray-dunes-bray-dunes-mer-est", "Bray-Dunes"},
-	{"Bray-Dunes — Mer Ouest (Viewsurf)", 51.0890, 2.5160, "https://www.viewsurf.com/univers/plage/vue/16794-france-nord-pas-de-calais-bray-dunes-mer-ouest", "Bray-Dunes"},
-	{"Bray-Dunes — Panoramique HD (Viewsurf)", 51.0875, 2.5190, "https://m.viewsurf.com/univers/plage/vue/16788-1137567784-france-nord-pas-de-calais-bray-dunes-panoramique-hd", "Bray-Dunes"},
 }
 
 func loadOpale() ([]Cam, error) {
 	var out []Cam
 	for i, o := range opale {
-		out = append(out, Cam{ID: fmt.Sprintf("opale-%d", i), Lat: o.Lat, Lon: o.Lon, Name: o.Name, Page: o.URL, Kind: "tourism", CC: "FR", City: o.City + ", Pas-de-Calais / Nord",
-			Info: "Public webcam page: " + hostOf(o.URL)})
+		c := Cam{ID: fmt.Sprintf("opale-%d", i), Lat: o.Lat, Lon: o.Lon, Name: o.Name, Page: o.URL, Kind: "tourism", CC: "FR", City: o.City + ", Pas-de-Calais",
+			Info: "Public webcam page: " + hostOf(o.URL)}
+		if strings.HasPrefix(c.Name, "Coquelles") || strings.Contains(c.Name, "A16") {
+			c.Kind = "traffic"
+		}
+		u, _ := url.Parse(o.URL)
+		if u != nil && embeddableHosts[u.Host] {
+			c.Video, c.VType = o.URL, "iframe"
+		} else {
+			c.NoEmbed = true
+		}
+		out = append(out, c)
 	}
 	return out, nil
 }

@@ -9,7 +9,7 @@ const WH = () => ({ headers: { "X-Windy-Key": wkey() } });
 const CC = { ES: "Spain", CA: "Canada", IS: "Iceland", FR: "France", GB: "United Kingdom", US: "United States", HK: "Hong Kong", FI: "Finland", SG: "Singapore", AU: "Australia", NZ: "New Zealand" };
 const TYPES = { video: ["LIVE / VIDEO", "#ff3b4e"], snap: ["SNAPSHOT", "#39c5cf"], page: ["WEB PAGE", "#f0a43a"], windy: ["WINDY LIVE", "#a371f7"], custom: ["MY CAMS", "#2bd67b"] };
 const camType = c => c.src === "custom" ? "custom" : c.src === "windy" ? "windy" : c.video ? "video" : c.img ? "snap" : "page";
-const shortSrc = k => ({ "fr-opale": "🇫🇷 Calais & Opale", "es-dgt": "Spain", "us-wsdot": "Washington", "ca-drivebc": "British Columbia", "ca-quebec": "Québec", "us-maryland": "Maryland", "is-vegagerdin": "Iceland", "fr-lyon": "🇫🇷 Lyon", "fr-grenoble": "🇫🇷 Grenoble", osm: "OSM webcams", windy: "Windy", custom: "My cams", "uk-tfl": "London", "us-nyc": "New York", "us-caltrans": "California", "hk-td": "Hong Kong", "fi-digitraffic": "Finland", "sg-lta": "Singapore", "au-nsw": "Sydney/NSW", "nz-nzta": "New Zealand" }[k] || k);
+const shortSrc = k => ({ "fr-viewsurf": "🇫🇷 Viewsurf France", "fr-opale": "🇫🇷 Calais & Opale", "es-dgt": "Spain", "us-wsdot": "Washington", "ca-drivebc": "British Columbia", "ca-quebec": "Québec", "us-maryland": "Maryland", "is-vegagerdin": "Iceland", "fr-lyon": "🇫🇷 Lyon", "fr-grenoble": "🇫🇷 Grenoble", osm: "OSM webcams", windy: "Windy", custom: "My cams", "uk-tfl": "London", "us-nyc": "New York", "us-caltrans": "California", "hk-td": "Hong Kong", "fi-digitraffic": "Finland", "sg-lta": "Singapore", "au-nsw": "Sydney/NSW", "nz-nzta": "New Zealand" }[k] || k);
 
 /* ---------------- state ---------------- */
 const CAMS = new Map(); let SOURCES = [];
@@ -78,6 +78,7 @@ function renderList() {
 }
 $("#list").onclick = e => { const id = e.target.closest(".it")?.dataset.id; if (id) openCam(id, true); };
 document.addEventListener("click", e => { const p = e.target.closest("[data-pop]"); if (p) { e.preventDefault(); popWin(p.dataset.pop); } });
+const hostName = u => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return u; } };
 function popWin(u) { window.open(u, "_blank", "popup=yes,width=1100,height=720"); }
 
 /* ---------------- dynamic sources (OSM / Windy) ---------------- */
@@ -134,17 +135,19 @@ function createPlayer(root, cam, opt = {}) {
   const P = { cam, mode: null, live: true, frames: [], idx: -1, timer: null, hls: null, destroyed: false };
   const modes = [];
   if (cam.video) modes.push(cam.vtype === "iframe" ? "windy" : cam.vtype);
+  if (cam.vtype === "window") cam = Object.assign({}, cam, { page: cam.video });
+  if (cam.page && cam.noembed && !cam.video && !cam.img) modes.push("window");
   if (cam.img) modes.push("img");
-  if (!cam.img && !cam.video && cam.page) modes.push("page");
+  if (!cam.img && !cam.video && cam.page && !cam.noembed) modes.push("page");
   P.mode = opt.mode && modes.includes(opt.mode) ? opt.mode : modes[0];
   const maxF = () => store.get("buffer", 120);
   const badge = (txt, cls) => { let b = $(".badge", pm); if (!b) { b = document.createElement("div"); pm.appendChild(b); } b.className = "badge " + cls; b.innerHTML = cls === "live" ? `<i></i>${txt}` : txt; };
   const tsl = t => { let s = $(".ts", pm); if (!s) { s = document.createElement("div"); s.className = "ts"; pm.appendChild(s); } s.textContent = t; };
   function stop() { clearInterval(P.timer); P.timer = null; if (P.hls) { P.hls.destroy(); P.hls = null; } }
-  function modeSel() { return modes.length > 1 ? `<select class="msel">${modes.map(m => `<option value="${m}" ${m === P.mode ? "selected" : ""}>${{ img: "Snapshot", hls: "Live stream", mp4: "Video clip", windy: "Live player", iframe: "Live player", page: "Web page" }[m]}</option>`).join("")}</select>` : ""; }
+  function modeSel() { return modes.length > 1 ? `<select class="msel">${modes.map(m => `<option value="${m}" ${m === P.mode ? "selected" : ""}>${{ img: "Snapshot", hls: "Live stream", mp4: "Video clip", windy: "Live player", iframe: "Live player", viewsurf: "Live player", window: "Live window", page: "Web page" }[m]}</option>`).join("")}</select>` : ""; }
   function render() {
     stop(); P.live = true;
-    if (P.mode === "img") renderImg(); else if (P.mode === "hls") renderHls(); else if (P.mode === "mp4") renderMp4(); else if (P.mode === "windy") renderWindy(); else renderPage();
+    if (P.mode === "img") renderImg(); else if (P.mode === "hls") renderHls(); else if (P.mode === "mp4") renderMp4(); else if (P.mode === "windy") renderWindy(); else if (P.mode === "viewsurf") renderViewsurf(); else if (P.mode === "window") renderWindow(); else renderPage();
   }
   // ---- snapshots with rewind buffer ----
   function showFrame(i) {
@@ -228,6 +231,32 @@ function createPlayer(root, cam, opt = {}) {
     $(".golive", ctl).onclick = () => renderWindy("live");
     P.windyKind = kind;
   }
+  // ---- Viewsurf: their official embeddable live player, resolved fresh on open ----
+  async function renderViewsurf() {
+    pm.innerHTML = `<div class="err" style="color:#6b7a90">Connecting to Viewsurf live…</div>`; badge("LIVE", "live");
+    ctl.innerHTML = `<button class="golive on" title="Reconnect to live (L)">● LIVE</button><button class="popb">Open on Viewsurf ↗</button>${modeSel()}<span class="lbl">Viewsurf HD live player</span>`;
+    $(".golive", ctl).onclick = () => renderViewsurf(); $(".popb", ctl).onclick = () => popWin(cam.page);
+    try {
+      const p = new URL(cam.video).pathname;
+      const d = await api("/api/vs?p=" + encodeURIComponent(p));
+      if (P.destroyed) return;
+      pm.innerHTML = `<iframe src="${h(d.embed)}" allow="autoplay; fullscreen" allowfullscreen scrolling="no"></iframe>`; badge("LIVE", "live");
+    } catch (e) { if (!P.destroyed) pm.innerHTML = `<div class="err">Viewsurf live player unavailable: ${h(e.message)}<br><a href="#" data-pop="${h(cam.page)}">Open on Viewsurf ↗</a></div>`; }
+  }
+  // ---- sites that forbid embedding: open their page in a window placed over the player ----
+  function placeWin() {
+    const r = pm.getBoundingClientRect(), bx = window.screenX + (window.outerWidth - window.innerWidth) / 2, by = window.screenY + (window.outerHeight - window.innerHeight);
+    return { left: Math.round(bx + r.left), top: Math.round(by + r.top), width: Math.max(420, Math.round(r.width)), height: Math.max(300, Math.round(r.height)) };
+  }
+  function renderWindow() {
+    pm.innerHTML = `<div class="err" style="color:#9aa8bb">${cam.src === "fr-viewsurf" ? "Viewsurf only allows its live player on its own site," : "This webcam's website doesn't allow being shown inside other apps,"}<br>so the live feed opens in its own window placed exactly over this player.<br><br><button class="btn pri wopen">▶ Open live window</button></div>`;
+    badge("LIVE WINDOW", "live");
+    ctl.innerHTML = `<button class="golive on" title="Re-open live window (L)">● LIVE</button><button class="wfit">⤢ Fit window to player</button>${modeSel()}<span class="lbl">${h(hostName(cam.page))}</span>`;
+    const open = () => { const g = placeWin(); try { if (P.win && !P.win.closed) P.win.close(); } catch { } P.win = window.open(cam.page, "ql_" + cam.id.replace(/\W/g, ""), `popup=yes,left=${g.left},top=${g.top},width=${g.width},height=${g.height}`); };
+    $(".wopen", pm).onclick = open; $(".golive", ctl).onclick = open;
+    $(".wfit", ctl).onclick = () => { if (P.win && !P.win.closed) { const g = placeWin(); try { P.win.moveTo(g.left, g.top); P.win.resizeTo(g.width, g.height); P.win.focus(); } catch { open(); } } else open(); };
+    if (opt.autoOpen !== false && !opt.compact) open();
+  }
   function renderPage() {
     pm.innerHTML = `<iframe src="${h(cam.page)}" referrerpolicy="no-referrer" sandbox="allow-scripts allow-same-origin allow-popups allow-presentation allow-forms" allow="autoplay; fullscreen"></iframe>`;
     badge("WEB PAGE", "live");
@@ -241,9 +270,10 @@ function createPlayer(root, cam, opt = {}) {
     else if (P.mode === "hls") { const v = $("video", pm); if (v) { const e = P.hls?.liveSyncPosition; if (e) v.currentTime = e; else if (v.seekable.length) v.currentTime = v.seekable.end(v.seekable.length - 1); v.play(); const pp = $(".pp", ctl); if (pp) pp.textContent = "❚❚"; } }
     else if (P.mode === "mp4") { const v = $("video", pm); if (v) { v.src = bust(cam.video); v.play(); } badge("LATEST CLIP", "live"); }
     else if (P.mode === "windy") renderWindy("live");
+    else if (P.mode === "window") { const b = $(".golive", ctl); b && b.click(); }
     else render();
   };
-  P.destroy = () => { P.destroyed = true; stop(); P.frames.forEach(f => URL.revokeObjectURL(f.url)); root.innerHTML = ""; };
+  P.destroy = () => { P.destroyed = true; stop(); try { if (P.win && !P.win.closed) P.win.close(); } catch { } P.frames.forEach(f => URL.revokeObjectURL(f.url)); root.innerHTML = ""; };
   P.setCam = c => { P.cam = cam = c; };
   render();
   return P;
@@ -385,7 +415,7 @@ $("#importc").onclick = () => $("#importf").click();
 $("#importf").onchange = async e => { try { const list = JSON.parse(await e.target.files[0].text()).filter(x => x.url && isFinite(x.lat) && isFinite(x.lon)); const merged = [...customs(), ...list.filter(x => !customs().some(y => y.id === x.id))]; saveCustom(merged); addCams(merged.map(customToCam)); renderFilters(); renderList(); } catch (err) { alert("Import failed: " + err.message); } };
 
 /* ---------------- quick jumps & search ---------------- */
-const JUMPS = [["🇫🇷 France", 46.6, 2.4, 6, 1], ["Paris", 48.857, 2.352, 12, 1], ["Lyon", 45.76, 4.84, 12, 1], ["Marseille", 43.296, 5.37, 12, 1], ["Lille / Nord", 50.63, 3.06, 10, 1], ["Pas-de-Calais (62)", 50.5, 2.3, 9, 1], ["Calais", 50.95, 1.86, 12, 1], ["Boulogne", 50.725, 1.61, 12, 1], ["Dunkerque", 51.03, 2.37, 12, 1], ["Grenoble", 45.18, 5.72, 12, 1], ["Nice", 43.70, 7.27, 12, 1], ["Bordeaux", 44.84, -0.58, 12, 1], ["Toulouse", 43.60, 1.44, 12, 1], ["Strasbourg", 48.58, 7.75, 12, 1], ["Nantes", 47.22, -1.55, 12, 1], ["Chamonix", 45.92, 6.87, 12, 1], ["London", 51.507, -0.128, 11], ["New York", 40.73, -73.95, 11], ["Los Angeles", 34.05, -118.25, 10], ["San Francisco", 37.77, -122.42, 11], ["Helsinki", 60.17, 24.94, 10], ["Hong Kong", 22.32, 114.17, 11], ["Singapore", 1.35, 103.82, 11], ["Sydney", -33.87, 151.21, 11], ["Auckland", -36.85, 174.76, 10], ["World", 30, 10, 2]];
+const JUMPS = [["🇫🇷 France", 46.6, 2.4, 6, 1], ["Paris", 48.857, 2.352, 12, 1], ["Lyon", 45.76, 4.84, 12, 1], ["Marseille", 43.296, 5.37, 12, 1], ["Lille / Nord", 50.63, 3.06, 10, 1], ["Pas-de-Calais (62)", 50.5, 2.3, 9, 1], ["Calais", 50.95, 1.86, 12, 1], ["Coquelles", 50.935, 1.80, 13, 1], ["Boulogne", 50.725, 1.61, 12, 1], ["Dunkerque", 51.03, 2.37, 12, 1], ["Grenoble", 45.18, 5.72, 12, 1], ["Nice", 43.70, 7.27, 12, 1], ["Bordeaux", 44.84, -0.58, 12, 1], ["Toulouse", 43.60, 1.44, 12, 1], ["Strasbourg", 48.58, 7.75, 12, 1], ["Nantes", 47.22, -1.55, 12, 1], ["Chamonix", 45.92, 6.87, 12, 1], ["London", 51.507, -0.128, 11], ["New York", 40.73, -73.95, 11], ["Los Angeles", 34.05, -118.25, 10], ["San Francisco", 37.77, -122.42, 11], ["Helsinki", 60.17, 24.94, 10], ["Hong Kong", 22.32, 114.17, 11], ["Singapore", 1.35, 103.82, 11], ["Sydney", -33.87, 151.21, 11], ["Auckland", -36.85, 174.76, 10], ["World", 30, 10, 2]];
 $("#jump").innerHTML = JUMPS.map((j, i) => `<button data-i="${i}" class="${j[4] ? "fr" : ""}">${j[0]}</button>`).join("");
 $("#jump").onclick = e => { const j = JUMPS[e.target.dataset.i]; if (j) map.flyTo([j[1], j[2]], j[3], { duration: 0.8 }); };
 $("#q").oninput = e => {

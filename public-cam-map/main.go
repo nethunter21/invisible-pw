@@ -36,7 +36,7 @@ var webFS embed.FS
 
 const ua = "Mozilla/5.0 (compatible; QuietLens/1.0)"
 
-const appVersion = "quietlens-2.1"
+const appVersion = "quietlens-2.2"
 
 var client = &http.Client{Timeout: 30 * time.Second}
 
@@ -98,6 +98,8 @@ type Cam struct {
 	Upd   string  `json:"upd,omitempty"`
 	// Windy player variants (live / day / month / year timelapses)
 	Players map[string]string `json:"players,omitempty"`
+	// site forbids being shown inside another app → opened in a window over the player
+	NoEmbed bool `json:"noembed,omitempty"`
 }
 
 type Source struct {
@@ -766,6 +768,7 @@ func main() {
 	mux.HandleFunc("/api/windy/one", handleWindyOne)
 	mux.HandleFunc("/api/windy/france", handleWindyFrance)
 	mux.HandleFunc("/api/img", handleImg)
+	mux.HandleFunc("/api/vs", handleVS)
 	mux.HandleFunc("/api/hls", handleHLS)
 	mux.HandleFunc("/api/heartbeat", func(w http.ResponseWriter, r *http.Request) { lastBeat.Store(time.Now().Unix()) })
 	mux.HandleFunc("/api/quit", func(w http.ResponseWriter, r *http.Request) {
