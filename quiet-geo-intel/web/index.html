@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quiet Geo Intel</title>
+<link rel="icon" href="logo.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="vendor/leaflet.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="top">
+  <div class="brand"><img src="logo.svg" alt=""><div><b>QUIET GEO INTEL</b><small>GEOPOLITICAL · WEATHER · MARKETS</small></div></div>
+  <div class="search"><input id="q" placeholder="Search events, tickers, regions…  ( / )" autocomplete="off"><div id="qres"></div></div>
+  <div class="topstats">
+    <div class="ts"><span>UTC</span><b id="utc">--:--:--</b></div>
+    <div class="ts"><span>LOCAL</span><b id="loc">--:--:--</b></div>
+    <div class="ts"><span>FEEDS</span><b id="feedstat"><i class="dot"></i> —</b></div>
+    <div class="ts"><span>THREAT</span><b id="threat">—</b></div>
+  </div>
+  <div class="tbtns">
+    <button id="bell" class="ib" title="Alert center"><svg viewBox="0 0 24 24"><path d="M12 22a2.5 2.5 0 0 0 2.4-2h-4.8A2.5 2.5 0 0 0 12 22Zm7-6V11a7 7 0 0 0-5.5-6.8V3a1.5 1.5 0 0 0-3 0v1.2A7 7 0 0 0 5 11v5l-2 2v1h18v-1Z"/></svg><em id="bellc">0</em></button>
+    <button id="snd" class="ib" title="Sound alerts on/off (S)"></button>
+    <button id="ntf" class="ib" title="Desktop notifications"><svg viewBox="0 0 24 24"><path d="M4 4h16v12H5.2L4 17.2Zm2 4v2h12V8Zm0 4v2h8v-2Z"/></svg></button>
+    <button id="fs" class="ib" title="Fullscreen (F)"><svg viewBox="0 0 24 24"><path d="M4 4h6v2H6v4H4Zm10 0h6v6h-2V6h-4ZM4 14h2v4h4v2H4Zm14 0h2v6h-6v-2h4Z"/></svg></button>
+  </div>
+</header>
+<nav id="tabs"></nav>
+<div id="tape"><div id="tapein"></div></div>
+
+<main>
+<!-- ============ TERMINAL ============ -->
+<section id="v-terminal" class="view on">
+  <div class="term">
+    <aside class="pnl left">
+      <div class="ph"><b>LIVE EVENT FEED</b><span id="evcount" class="mut"></span></div>
+      <div class="chips" id="evfilter"></div>
+      <div class="sortrow"><select id="evsort"><option value="time">Newest</option><option value="score">Highest severity</option><option value="trade">Most tradable</option></select><select id="evlevel"><option value="0">All levels</option><option value="35">Elevated+</option><option value="60">High+</option><option value="80">Critical</option></select></div>
+      <div id="evlist" class="list"></div>
+    </aside>
+    <div class="center">
+      <div class="pnl mapwrap">
+        <div id="tmap" class="map"></div>
+        <div class="mapbar">
+          <div class="seg" id="regionseg"></div>
+          <div class="seg" id="tlayers"></div>
+        </div>
+        <div class="legend" id="tlegend"></div>
+      </div>
+      <div class="pnl chartwrap">
+        <div class="ph"><b id="chsym">CL=F</b><span id="chname" class="mut"></span><span id="chpx" class="px"></span>
+          <div class="seg sm" id="chtf"></div>
+          <div class="trade" id="chtrade"></div>
+        </div>
+        <div id="tchart" class="chart"></div>
+      </div>
+    </div>
+    <aside class="pnl right">
+      <div class="ph"><b>TRADE INTELLIGENCE</b><span class="mut" id="intelsrc"></span></div>
+      <div id="intel" class="scroll"></div>
+    </aside>
+  </div>
+</section>
+
+<!-- ============ WAR ROOM ============ -->
+<section id="v-war" class="view">
+  <div class="split2">
+    <div class="pnl">
+      <div class="ph"><b>CONFLICT &amp; GEOPOLITICAL WIRE</b><span class="mut" id="warmeta"></span></div>
+      <div class="chips" id="warfilter"></div>
+      <div id="warlist" class="list"></div>
+    </div>
+    <div class="col">
+      <div class="pnl" style="flex:1.2"><div id="warmap" class="map"></div></div>
+      <div class="pnl" style="flex:1"><div class="ph"><b>HOTSPOT HEAT · last 24h</b><span class="mut">count · max severity · mapped assets</span></div><div id="hotspots" class="scroll"></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ WEATHER MAP ============ -->
+<section id="v-map" class="view">
+  <div class="mapfull">
+    <aside class="pnl layers" id="layerpanel">
+      <div class="ph"><b>LAYERS</b><input id="layerq" placeholder="filter…"></div>
+      <div id="layerlist" class="scroll"></div>
+    </aside>
+    <div class="pnl mapwrap">
+      <div id="wmap" class="map"></div>
+      <div class="timebar" id="timebar">
+        <button id="tplay" class="ib sm">▶</button>
+        <input type="range" id="tslider" min="0" max="0" value="0">
+        <span id="tlabel" class="mono">Radar: —</span>
+      </div>
+      <div class="legend" id="wlegend"></div>
+      <div class="inspect" id="inspect"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ CYCLONES ============ -->
+<section id="v-cyclone" class="view">
+  <div class="term cy">
+    <aside class="pnl left"><div class="ph"><b>TROPICAL CYCLONES</b><span class="mut" id="cymeta"></span></div><div id="cylist" class="list"></div></aside>
+    <div class="pnl mapwrap"><div id="cmap" class="map"></div><div class="legend" id="clegend"></div></div>
+    <aside class="pnl right"><div class="ph"><b>CYCLONE INTELLIGENCE</b></div><div id="cyintel" class="scroll"></div></aside>
+  </div>
+</section>
+
+<!-- ============ MARKETS ============ -->
+<section id="v-markets" class="view">
+  <div class="split3">
+    <div class="pnl"><div class="ph"><b>WATCHLISTS</b><div class="seg sm" id="wlgroups"></div></div><div id="wltable" class="scroll"></div></div>
+    <div class="col">
+      <div class="pnl" style="flex:1.4"><div class="ph"><b id="mchsym">—</b><span id="mchname" class="mut"></span><span id="mchpx" class="px"></span><div class="seg sm" id="mchtf"></div><div class="trade" id="mchtrade"></div></div><div id="mchart" class="chart"></div></div>
+      <div class="pnl" style="flex:1"><div class="ph"><b>PAPER TRADING</b><span class="mut">simulated · no real orders</span></div><div id="paper" class="scroll"></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ PREDICTION MARKETS ============ -->
+<section id="v-predict" class="view">
+  <div class="pnl full"><div class="ph"><b>PREDICTION MARKETS</b><span class="mut">Polymarket public data · read-only · prices = implied probability, not a forecast</span><div class="seg sm" id="pmtags"></div></div><div id="pmlist" class="scroll grid"></div></div>
+</section>
+
+<!-- ============ FORECAST ============ -->
+<section id="v-forecast" class="view">
+  <div class="split2 fc">
+    <div class="col">
+      <div class="pnl ctrl">
+        <div class="ph"><b>FORECAST CENTER · MULTI-MODEL</b><span class="mut" id="fcmeta"></span></div>
+        <div class="fcrow">
+          <input id="fcq" placeholder="Search city…"><div id="fcres"></div>
+          <select id="fcpreset"></select>
+          <select id="fcvar"></select>
+          <div class="seg sm" id="fcdays"></div>
+        </div>
+        <div class="chips" id="fcmodels"></div>
+      </div>
+      <div class="pnl" style="flex:1"><div id="fchart" class="chart"></div></div>
+    </div>
+    <div class="pnl"><div class="ph"><b>MODEL AGREEMENT &amp; ENERGY DEMAND</b></div><div id="fcstats" class="scroll"></div></div>
+  </div>
+</section>
+
+<!-- ============ STRATEGIES ============ -->
+<section id="v-strategies" class="view">
+  <div class="split2 st">
+    <div class="pnl"><div class="ph"><b>STRATEGY PLAYBOOK</b><span class="mut" id="stmeta"></span></div><div class="chips" id="stcats"></div><div id="stlist" class="scroll"></div></div>
+    <div class="pnl"><div id="stdetail" class="scroll pad"></div></div>
+  </div>
+</section>
+
+<!-- ============ ALERTS ============ -->
+<section id="v-alerts" class="view">
+  <div class="split2">
+    <div class="pnl"><div class="ph"><b>ALERT RULES</b></div><div id="alertcfg" class="scroll pad"></div></div>
+    <div class="pnl"><div class="ph"><b>ALERT HISTORY</b><button class="btn sm" id="clearhist">Clear</button></div><div id="alerthist" class="list"></div></div>
+  </div>
+</section>
+
+<!-- ============ SOURCES ============ -->
+<section id="v-sources" class="view">
+  <div class="pnl full"><div class="ph"><b>DATA SOURCES &amp; STATUS</b><span class="mut">All sources are free / keyless. Nothing is simulated: unavailable data is shown as unavailable.</span><button class="btn sm danger" id="quit">Quit app</button></div><div id="srcs" class="scroll pad"></div></div>
+</section>
+</main>
+
+<div id="toasts"></div>
+<script src="vendor/leaflet.js"></script>
+<script src="vendor/lwc.js"></script>
+<script src="strategies.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
