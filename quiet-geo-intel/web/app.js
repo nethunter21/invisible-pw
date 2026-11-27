@@ -307,13 +307,14 @@ function mkMap(el, center = [22, 20], z = 2) {
   baseTiles(m);
   return m;
 }
-const TOV = { radar: false, sst: false, chokepoints: true };
+const TOV = Object.assign({ radar: false, sst: false, chokepoints: true, energy: false, nuclear: false, bases: false, pipelines: false }, store.get("tov", {}));
 function initTerminal() {
   tmap = mkMap("tmap");
   tLayer = L.layerGroup().addTo(tmap);
   $("#regionseg").innerHTML = Object.keys(REGIONS).map(r => `<button data-r="${r}">${r}</button>`).join("");
   $("#regionseg").onclick = e => { const r = e.target.dataset.r; if (r) { tmap.flyTo(...REGIONS[r], { duration: 0.7 }); $$("#regionseg button").forEach(b => b.classList.toggle("on", b === e.target)); } };
-  const opts = { radar: "Radar", sst: "Sea temp", chokepoints: "Chokepoints" };
+  const opts = { radar: "Radar", sst: "Sea temp", chokepoints: "Chokepoints", energy: "Energy", pipelines: "Pipelines", nuclear: "Nuclear", bases: "Bases" };
+  const GROUPK = { energy: ["oilterminals", "refineries", "lng"], pipelines: ["pipelines"], nuclear: ["nuclear", "nukeweapons"], bases: ["bases"] };
   const tl = {};
   const draw = () => {
     $("#tlayers").innerHTML = Object.entries(opts).map(([k, n]) => `<button data-k="${k}" class="${TOV[k] ? "on" : ""}">${n}</button>`).join("");
@@ -323,6 +324,11 @@ function initTerminal() {
     if (!TOV.sst && tl.sst) { tmap.removeLayer(tl.sst); tl.sst = null; }
     if (TOV.chokepoints && !tl.ch) tl.ch = geoLayer("chokepoints").addTo(tmap);
     if (!TOV.chokepoints && tl.ch) { tmap.removeLayer(tl.ch); tl.ch = null; }
+    Object.entries(GROUPK).forEach(([k, kinds]) => {
+      if (TOV[k] && !tl[k]) tl[k] = L.layerGroup(kinds.map(geoLayer)).addTo(tmap);
+      if (!TOV[k] && tl[k]) { tmap.removeLayer(tl[k]); tl[k] = null; }
+    });
+    store.set("tov", TOV);
   };
   $("#tlayers").onclick = e => { const k = e.target.dataset.k; if (k) { TOV[k] = !TOV[k]; draw(); } };
   draw();
@@ -474,7 +480,7 @@ document.addEventListener("click", e => { const p = e.target.dataset?.paper; if 
 /* ================= WAR ROOM ================= */
 let wmapW, wLayer, warTheme = "ALL";
 function renderWar() {
-  if (!wmapW) { wmapW = mkMap("warmap", [30, 40], 3); wLayer = L.layerGroup().addTo(wmapW); geoLayer("chokepoints").addTo(wmapW); }
+  if (!wmapW) { wmapW = mkMap("warmap", [30, 40], 3); wLayer = L.layerGroup().addTo(wmapW); ["chokepoints", "bases", "nukeweapons", "oilterminals"].forEach(k => geoLayer(k).addTo(wmapW)); }
   const themes = {}; S.news.forEach(e => (e.themes || []).forEach(t => themes[t] = (themes[t] || 0) + 1));
   $("#warfilter").innerHTML = ["ALL", ...Object.keys(themes).sort((a, b) => themes[b] - themes[a])].map(t => `<button class="chip ${warTheme === t ? "on" : ""}" data-t="${t}">${t}<i>${t === "ALL" ? S.news.length : themes[t]}</i></button>`).join("");
   const list = S.news.filter(e => warTheme === "ALL" || (e.themes || []).includes(warTheme));
@@ -492,25 +498,21 @@ $("#warfilter").onclick = e => { const t = e.target.closest(".chip")?.dataset.t;
 [$("#warlist"), $("#hotspots")].forEach(el => el.onclick = e => { const s = e.target.closest(".tk")?.dataset.s; if (s) { showTab("terminal"); return loadChart(TC, s); } const id = e.target.closest("[data-id]")?.dataset.id; if (id) openEvent(id); });
 onShow.war = renderWar;
 
-/* ================= GEO STATIC LAYERS ================= */
-const GEO = {
-  chokepoints: [["Strait of Hormuz", 26.57, 56.25, "≈20% of world oil liquids + Qatar LNG", "CL=F,BZ=F,FRO"], ["Bab el-Mandeb", 12.6, 43.33, "Red Sea gateway to Suez — Asia↔Europe containers", "ZIM,MAERSK-B.CO,BZ=F"], ["Suez Canal", 30.6, 32.33, "≈12% of global trade", "ZIM,MAERSK-B.CO"], ["Strait of Malacca", 2.5, 101.3, "Main Indian Ocean ↔ Pacific oil/container route", "FRO,BDRY"], ["Panama Canal", 9.08, -79.68, "US Gulf LNG/grain to Asia; drought-sensitive", "BDRY,ZC=F,NG=F"], ["Bosporus", 41.12, 29.07, "Black Sea grain & Russian oil exports", "ZW=F,BZ=F"], ["Kerch Strait", 45.3, 36.5, "Azov Sea access", "ZW=F"], ["Strait of Gibraltar", 35.95, -5.6, "Mediterranean ↔ Atlantic", "BDRY"], ["Taiwan Strait", 24.3, 119.6, "Major container lane; semiconductor supply", "TSM,ZIM"], ["Danish Straits", 55.6, 12.7, "Baltic exit for Russian crude/products", "BZ=F"], ["Cape of Good Hope", -34.36, 18.47, "Suez-diversion route", "FRO,ZIM"], ["Lombok Strait", -8.75, 115.75, "Very large bulk carriers bypassing Malacca", "BDRY"]],
-  energy: [["Abqaiq processing", 25.94, 49.68, "World's largest crude stabilisation plant (Aramco)", "CL=F,BZ=F"], ["Ras Tanura", 26.64, 50.16, "Saudi export terminal", "BZ=F"], ["Kharg Island", 29.23, 50.32, "~90% of Iranian crude exports", "BZ=F,CL=F"], ["Ras Laffan LNG", 25.9, 51.55, "Qatar LNG hub", "NG=F,TTF=F"], ["Fujairah", 25.12, 56.35, "Bunkering/storage hub outside Hormuz", "BZ=F"], ["Basra oil terminal", 29.68, 48.8, "Iraq southern exports", "BZ=F"], ["Ceyhan", 36.88, 35.93, "Kirkuk/BTC pipeline terminal", "BZ=F"], ["Novorossiysk", 44.72, 37.78, "Russian/Kazakh CPC crude exports", "BZ=F"], ["Primorsk", 60.35, 28.6, "Russian Baltic crude port", "BZ=F"], ["Ust-Luga", 59.68, 28.4, "Russian Baltic products/crude", "BZ=F"], ["Sabine Pass LNG", 29.74, -93.87, "Largest US LNG export terminal", "NG=F"], ["Houston Ship Channel", 29.73, -95.0, "Refining & petrochemical complex", "RB=F,CL=F"], ["Cushing, OK", 35.98, -96.77, "WTI delivery hub", "CL=F"], ["Rotterdam", 51.95, 4.13, "Europe's largest refining/port hub", "BZ=F,TTF=F"], ["Singapore", 1.26, 103.75, "Asian refining & bunkering hub", "BZ=F"], ["Zaporizhzhia NPP", 47.51, 34.59, "Europe's largest nuclear plant (frontline)", "TTF=F"]],
-  semis: [["TSMC Hsinchu", 24.78, 121.0, "Leading-edge logic fabs", "TSM,SOXX"], ["TSMC Tainan", 23.11, 120.27, "3nm/5nm fabs", "TSM"], ["TSMC Arizona", 33.79, -112.12, "US fabs", "TSM"], ["Samsung Pyeongtaek", 37.01, 127.05, "Memory/foundry", "MU,SOXX"], ["JASM Kumamoto", 32.88, 130.75, "TSMC/Sony JV fab", "TSM"], ["ASML Veldhoven", 51.41, 5.41, "Lithography monopoly", "SOXX"]],
-  nuclear: [["Natanz", 33.72, 51.73, "Iranian enrichment site", "CL=F,GC=F"], ["Fordow", 34.88, 50.99, "Iranian enrichment site (underground)", "CL=F,GC=F"], ["Bushehr NPP", 28.83, 50.89, "Iranian nuclear power plant", "CL=F"], ["Yongbyon", 39.8, 125.75, "North Korean nuclear complex", "EWY,GC=F"]],
-  ag: [["US Corn Belt", [36, -100, 46, -82], "Corn & soy — pollination July", "ZC=F,ZS=F"], ["Mato Grosso", [-18, -60, -9, -50], "Brazil soy/corn — harvest Jan–Mar", "ZS=F,ZC=F"], ["Minas Gerais coffee", [-23, -48, -17, -41], "Arabica — flowering Sep–Nov, frost Jun–Aug", "KC=F"], ["São Paulo cane", [-23.5, -52, -19.5, -46], "Sugar cane — crush Apr–Nov", "SB=F"], ["Côte d'Ivoire / Ghana cocoa", [4.5, -8.5, 8.5, -0.5], "~60% of world cocoa", "CC=F"], ["Black Sea breadbasket", [45, 30, 51, 45], "Ukraine/S. Russia wheat & corn", "ZW=F,ZC=F"], ["Punjab", [28, 72, 32, 77], "Indian wheat & rice", "ZW=F,ZR=F"], ["Argentine Pampas", [-38, -64, -30, -58], "Soy, corn, wheat", "ZS=F,ZC=F"], ["US Plains wheat", [34, -103, 41, -96], "Hard red winter wheat", "ZW=F"], ["Australia wheat belt", [-35, 115, -28, 120], "WA wheat", "ZW=F"], ["SE Asia palm oil", [-3, 98, 6, 118], "Malaysia/Indonesia palm", "DBA"]],
-};
-const GEOCOL = { chokepoints: "#39C5CF", energy: "#F0A43A", semis: "#A371F7", nuclear: "#FF3B4E", ag: "#2BD67B" };
+/* ================= GEO STATIC LAYERS (data in geodata.js) ================= */
 function geoLayer(kind) {
-  const g = L.layerGroup(), col = GEOCOL[kind];
-  GEO[kind].forEach((row) => {
-    let [n, a, b, desc, syms] = row;
-    if (Array.isArray(a)) { syms = desc; desc = b; }
+  const g = L.layerGroup(), [label, col, shape] = GEOMETA[kind];
+  const pop = (n, desc, syms) => `<b style="color:${col}">${h(n)}</b><div class="mut" style="font-size:9.5px;letter-spacing:.1em;margin-top:2px">${h(label.toUpperCase())}</div><div class="note" style="color:#9aa8bb;margin:4px 0 6px">${h(desc || "")}</div>${syms ? `<div class="links">${syms.split(",").filter(Boolean).map(s => `<a class="lnk" target="_blank" href="${BROKERS.tradingview.u(s)}">${s} ↗</a>`).join("")}</div>` : ""}`;
+  GEO[kind].forEach(row => {
     let l;
-    if (Array.isArray(a)) l = L.rectangle([[a[0], a[1]], [a[2], a[3]]], { color: col, weight: 1, fillOpacity: 0.08, dashArray: "4 3" });
-    else l = L.marker([a, b], { icon: L.divIcon({ className: "", html: `<div style="width:9px;height:9px;border:2px solid ${col};background:#07090D;${kind === "chokepoints" ? "transform:rotate(45deg)" : "border-radius:50%"}"></div>`, iconSize: [9, 9] }) });
-    l.bindPopup(`<b style="color:${col}">${h(n)}</b><div class="note" style="color:#9aa8bb;margin:4px 0 6px">${h(desc)}</div><div class="links">${syms.split(",").map(s => `<a class="lnk" target="_blank" href="${BROKERS.tradingview.u(s)}">${s} ↗</a>`).join("")}</div>`);
-    l.bindTooltip(n, { direction: "top" });
+    if (shape === "line") { const [n, pts, desc, syms] = row; l = L.polyline(pts, { color: col, weight: 2.2, opacity: 0.8, dashArray: /damaged|offline/i.test(n) ? "4 5" : null }); l.bindPopup(pop(n, desc, syms)); }
+    else if (shape === "area") { const [n, bb, desc, syms] = row; l = L.rectangle([[bb[0], bb[1]], [bb[2], bb[3]]], { color: col, weight: 1, fillOpacity: 0.08, dashArray: "4 3" }); l.bindPopup(pop(n, desc, syms)); }
+    else {
+      const [n, la, lo, desc, syms] = row;
+      if (shape === "dot" || shape === "square") l = L.circleMarker([la, lo], { radius: shape === "square" ? 4.5 : 4, color: "#05070a", weight: 1, fillColor: col, fillOpacity: 0.95 });
+      else l = L.marker([la, lo], { icon: L.divIcon({ className: "", html: shape === "triangle" ? `<div style="width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-bottom:11px solid ${col};filter:drop-shadow(0 0 2px #000)"></div>` : shape === "ring" ? `<div style="width:11px;height:11px;border-radius:50%;border:2.5px solid ${col};background:#07090D;box-shadow:0 0 6px ${col}"></div>` : `<div style="width:9px;height:9px;border:2px solid ${col};background:#07090D;transform:rotate(45deg)"></div>`, iconSize: [12, 12] }) });
+      l.bindPopup(pop(n, desc, syms));
+    }
+    l.bindTooltip(row[0], { direction: "top" });
     l.addTo(g);
   });
   return g;
@@ -523,7 +525,7 @@ function graticule() {
 }
 
 /* ================= WEATHER MAP ================= */
-const gibs = (id, lvl, op = 0.7, date = "default") => L.tileLayer(`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/${id}/default/${date}/GoogleMapsCompatible_Level${lvl}/{z}/{y}/{x}.${/Reflectance|Black_Marble|Relief/.test(id) ? "jpg" : "png"}`, { maxNativeZoom: lvl, maxZoom: 12, opacity: op, attribution: 'Imagery: <a href="https://earthdata.nasa.gov/gibs">NASA GIBS</a>', bounds: [[-85, -180], [85, 180]] });
+const gibs = (id, lvl, op = 0.7, date = "default") => L.tileLayer(`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/${id}/default/${date}/GoogleMapsCompatible_Level${lvl}/{z}/{y}/{x}.${/Reflectance|Relief/.test(id) ? "jpg" : "png"}`, { maxNativeZoom: lvl, maxZoom: 12, opacity: op, attribution: 'Imagery: <a href="https://earthdata.nasa.gov/gibs">NASA GIBS</a>', bounds: [[-85, -180], [85, 180]] });
 let radarMeta = null, radarFrames = [], radarIdx = 0, radarTimer = null;
 async function loadRadarMeta() { try { radarMeta = await api("/api/radar"); radarFrames = [...(radarMeta.radar?.past || []), ...(radarMeta.radar?.nowcast || [])]; radarIdx = (radarMeta.radar?.past || []).length - 1; } catch (e) { radarMeta = null; } return radarMeta; }
 async function radarLayer(path) {
@@ -555,7 +557,7 @@ const LAYERS = [
   ["BASE MAP", [
     { id: "labels", n: "Place labels", ds: "Cities, countries (NASA GIBS / OSM)", on: true, make: labelsLayer },
     { id: "grid", n: "Lat/lon grid", ds: "15° graticule", make: graticule },
-    { id: "truecolor", n: "Satellite true colour", ds: "NASA VIIRS SNPP · latest day", make: () => gibs("VIIRS_SNPP_CorrectedReflectance_TrueColor", 9, 0.9) },
+    { id: "truecolor", n: "Satellite true colour", ds: "NASA VIIRS NOAA-20 · yesterday (latest complete day)", make: () => gibs("VIIRS_NOAA20_CorrectedReflectance_TrueColor", 9, 0.95, YDAY) },
     { id: "relief", n: "Terrain / shaded relief", ds: "NASA ASTER GDEM", make: () => gibs("ASTER_GDEM_Greyscale_Shaded_Relief", 12, 0.45) },
     { id: "lights", n: "Night lights", ds: "NASA Black Marble — economic activity", make: () => gibs("VIIRS_Black_Marble", 8, 0.8, "2016-01-01") },
     { id: "pop", n: "Population density", ds: "SEDAC GPW 2020", make: () => gibs("GPW_Population_Density_2020", 7, 0.6) },
@@ -563,14 +565,14 @@ const LAYERS = [
   ["RADAR & SATELLITE", [
     { id: "radar", n: "Precipitation radar (animated)", ds: "RainViewer · past 2h + nowcast", radar: true },
     { id: "imerg", n: "Global precipitation rate", ds: "NASA GPM IMERG · near-real-time", make: () => gibs("IMERG_Precipitation_Rate", 6, 0.75) },
-    { id: "cloudtop", n: "Cloud top temperature", ds: "MODIS Terra · storm tops", make: () => gibs("MODIS_Terra_Cloud_Top_Temp_Day", 6, 0.6) },
+    { id: "irsat", n: "Live IR satellite (~10 min)", ds: "GOES-East/West + Himawari · cloud & storm structure", make: irSat },
+    { id: "cloudtop", n: "Cloud top temperature", ds: "MODIS Terra · yesterday", make: () => gibs("MODIS_Terra_Cloud_Top_Temp_Day", 6, 0.6, YDAY) },
     { id: "aerosol", n: "Aerosol / smoke / ash", ds: "MODIS Terra AOD", make: () => gibs("MODIS_Terra_Aerosol", 6, 0.6) },
   ]],
   ["MODEL FIELDS (OPEN-METEO, CURRENT)", Object.entries(WX_FIELDS).map(([k, f]) => ({ id: "wx-" + k, n: f.n, ds: "Best-match model · sampled grid · arrows = wind dir", wx: k }))],
   ["OCEAN", [
     { id: "sst", n: "Sea surface temperature", ds: "GHRSST MUR L4 · cyclone fuel ≥ 26.5°C", make: () => gibs("GHRSST_L4_MUR_Sea_Surface_Temperature", 7, 0.7) },
     { id: "ssta", n: "SST anomaly", ds: "GHRSST MUR · marine heatwaves / El Niño", make: () => gibs("GHRSST_L4_MUR_Sea_Surface_Temperature_Anomalies", 7, 0.7) },
-    { id: "owind", n: "Ocean wind speed", ds: "AMSR2 · daily", make: () => gibs("AMSRU2_Wind_Speed_Day", 6, 0.7) },
   ]],
   ["LAND & AGRICULTURE", [
     { id: "soil", n: "Root-zone soil moisture", ds: "NASA SMAP L4 · drought stress", make: () => gibs("SMAP_L4_Analyzed_Root_Zone_Soil_Moisture", 6, 0.7) },
@@ -580,11 +582,8 @@ const LAYERS = [
   ["EVENTS & GEOPOLITICS", [
     { id: "ev-nat", n: "Natural hazards (live)", ds: "GDACS · USGS · NASA EONET · NHC", on: true, ev: "nat" },
     { id: "ev-war", n: "Conflict hotspots (live)", ds: "Wire classifier", on: true, ev: "war" },
-    { id: "geo-choke", n: "Strategic chokepoints", ds: "Shipping lanes → freight/oil", make: () => geoLayer("chokepoints") },
-    { id: "geo-energy", n: "Energy infrastructure", ds: "Oil, LNG, refining hubs", make: () => geoLayer("energy") },
-    { id: "geo-semis", n: "Semiconductor fabs", ds: "Chip supply chain", make: () => geoLayer("semis") },
-    { id: "geo-nuke", n: "Nuclear sites", ds: "Flashpoint facilities", make: () => geoLayer("nuclear") },
   ]],
+  ["INFRASTRUCTURE & STRATEGIC SITES", Object.keys(GEOMETA).filter(k => k !== "ag").map(k => ({ id: "geo-" + k, n: GEOMETA[k][0], ds: GEO[k].length + " sites · click for tradable tickers", make: () => geoLayer(k) }))],
 ];
 let wmap, LSTATE = store.get("layers", {}), LOBJ = {}, wxGrid = null, wxField = null;
 function initWMap() {
@@ -688,59 +687,190 @@ async function inspect(lat, lon) {
 onShow.map = () => { if (!wmap) initWMap(); else { wmap.invalidateSize(); renderWMapEvents(); } };
 
 /* ================= CYCLONES ================= */
-let cmap, cLayer, cyData = null, cySel = null;
-async function loadCyclones() {
-  if (!cmap) { cmap = mkMap("cmap", [15, 120], 3); cLayer = L.layerGroup().addTo(cmap); gibs("GHRSST_L4_MUR_Sea_Surface_Temperature", 7, 0.22).addTo(cmap); setTimeout(() => cmap.invalidateSize(), 50); }
-  try { cyData = await api("/api/cyclones"); } catch (e) { $("#cylist").innerHTML = `<div class="unavail">Cyclone feeds unavailable: ${h(e.message)}</div>`; return; }
-  const list = [...(cyData.nhc || []).map(s => ({ src: "NHC", id: "nhc-" + s.id, name: s.name, cls: s.classification, wind: +s.intensity, pres: s.pressure, lat: s.latitudeNumeric, lon: s.longitudeNumeric, mv: `${s.movementDir}° @ ${s.movementSpeed} kt`, upd: s.lastUpdate, link: s.publicAdvisory?.url, graphics: s.forecastGraphics?.url, current: true, raw: s })),
-  ...(cyData.gdacs || []).map(e => ({ src: "GDACS", id: e.id, name: e.details?.Name || e.title, cls: e.details?.Severity, alert: e.alert, lat: e.lat, lon: e.lon, upd: e.updated, link: e.link, eventid: e.details?.["Event ID"], episode: e.details?.Episode, exposure: e.details?.Exposure, current: e.details?.Current === "true", country: e.country, assets: e.assets, region: e.region, level: e.level, score: e.score }))];
-  list.sort((a, b) => (b.current - a.current) || new Date(b.upd) - new Date(a.upd));
-  $("#cymeta").textContent = `${list.filter(x => x.current).length} active · ${list.length} tracked`;
-  $("#cylist").innerHTML = list.length ? list.map(c => `<div class="ev ${cySel === c.id ? "sel" : ""}" data-id="${h(c.id)}"><div class="bar" style="background:${c.current ? (c.alert === "Red" ? "#FF3B4E" : c.alert === "Orange" ? "#F07A2A" : "#A371F7") : "#2a3446"}"></div><div><div class="t">${h(c.name)} ${c.current ? "" : '<span class="mut">(ended)</span>'}</div><div class="m"><span class="kd">${h(c.src)}</span>${c.alert ? `<span class="lv ${c.alert === "Red" ? "CRITICAL" : c.alert === "Orange" ? "HIGH" : "WATCH"}">${h(c.alert)}</span>` : ""}<span>${h(c.cls || "")}</span>${c.country ? `<span>${h(c.country)}</span>` : ""}<span>${ago(c.upd)} ago</span></div></div></div>`).join("") : `<div class="empty">No tropical cyclones are currently reported by NHC or GDACS.<br><br><span class="note">This is real: when a storm forms anywhere on Earth it appears here automatically (refresh every 10 min) and the alert engine notifies you.</span></div>`;
-  cLayer.clearLayers();
-  list.forEach(c => { if (c.lat == null) return; L.marker([c.lat, c.lon], { icon: L.divIcon({ className: "", html: `<div class="pulse" style="color:#A371F7;font:700 22px/22px var(--mono);text-shadow:0 0 8px #A371F7">@</div>`, iconSize: [22, 22] }) }).bindTooltip(h(c.name)).on("click", () => selCyclone(c)).addTo(cLayer); });
-  $("#clegend").innerHTML = `<div class="lg"><i class="sw" style="background:#FF3B4E"></i>Red-alert wind buffer (≥120 km/h)</div><div class="lg"><i class="sw" style="background:#F07A2A"></i>Orange buffer (≥90 km/h)</div><div class="lg"><i class="sw" style="background:#2BD67B"></i>Green buffer (≥60 km/h)</div><div class="lg"><i class="sw" style="background:#39C5CF"></i>Track (GDACS)</div><div class="note">Background: sea-surface temperature (NASA GHRSST)</div>`;
-  const pick = list.find(c => c.id === cySel) || list.find(c => c.current) || list[0];
-  if (pick) selCyclone(pick, !cySel); else renderCyIntel(null);
-  CY_LIST = list;
+const YDAY = new Date(Date.now() - 86400e3).toISOString().slice(0, 10);
+function irSat() { return L.layerGroup(["GOES-East_ABI_Band13_Clean_Infrared", "GOES-West_ABI_Band13_Clean_Infrared", "Himawari_AHI_Band13_Clean_Infrared"].map(id => gibs(id, 6, 0.5))); }
+const SS = [[137, "CAT 5", "#D946EF"], [113, "CAT 4", "#FF3B4E"], [96, "CAT 3", "#F07A2A"], [83, "CAT 2", "#F0A43A"], [64, "CAT 1", "#F0C03A"], [34, "TS", "#39C5CF"], [0, "TD", "#5AA9E6"]];
+const ssCat = kt => SS.find(s => (kt || 0) >= s[0]);
+const segCol = c => /HU|TY|MH|CAT/.test(c || "") ? "#F07A2A" : /TS|STS/.test(c || "") ? "#39C5CF" : "#5AA9E6";
+const haversine = (a, b, c, d) => { const R = 6371, r = Math.PI / 180, x = Math.sin((c - a) * r / 2) ** 2 + Math.cos(a * r) * Math.cos(c * r) * Math.sin((d - b) * r / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(x)); };
+const CY_LAYERS = [
+  ["nightlights", "Night lights", "BASE", true, () => gibs("VIIRS_Black_Marble", 8, 0.85, "2016-01-01")],
+  ["truecolor", "Satellite true colour (yesterday)", "BASE", false, () => gibs("VIIRS_NOAA20_CorrectedReflectance_TrueColor", 9, 0.95, YDAY)],
+  ["labels", "Place labels", "BASE", true, labelsLayer],
+  ["grid", "Lat/lon grid", "BASE", false, graticule],
+  ["irsat", "Live IR satellite (GOES / Himawari)", "WEATHER", true, irSat],
+  ["sst", "Sea surface temperature", "WEATHER", false, () => gibs("GHRSST_L4_MUR_Sea_Surface_Temperature", 7, 0.5)],
+  ["ssta", "SST anomaly", "WEATHER", false, () => gibs("GHRSST_L4_MUR_Sea_Surface_Temperature_Anomalies", 7, 0.55)],
+  ["imerg", "Rain rate (NASA IMERG)", "WEATHER", false, () => gibs("IMERG_Precipitation_Rate", 6, 0.75)],
+  ["cloudtop", "Cloud-top temperature (yesterday)", "WEATHER", false, () => gibs("MODIS_Terra_Cloud_Top_Temp_Day", 6, 0.6, YDAY)],
+  ["radar", "Precipitation radar", "WEATHER", false, () => radarLayer()],
+  ["pop", "Population density", "WEATHER", false, () => gibs("GPW_Population_Density_2020", 7, 0.55)],
+  ["history", "Observed track (past positions)", "STORM", true, null],
+  ["forecast", "Forecast track, positions & cone", "STORM", true, null],
+  ["windbuf", "Wind-speed buffers (GDACS)", "STORM", true, null],
+  ["ended", "Show recently ended storms", "STORM", true, null],
+  ["inpath", "Highlight assets in the storm's path", "STORM", true, null],
+  ...Object.keys(GEOMETA).map(k => ["geo-" + k, GEOMETA[k][0], "INFRASTRUCTURE", ["oilterminals", "refineries", "lng", "nuclear", "oilfields", "pipelines"].includes(k), () => geoLayer(k)]),
+];
+let cmap, cyObjs = {}, cyStormLayer, cyGeomLayer, cyPathLayer, cyData = null, cySel = null, CY_LIST = [], cyAt = 0, cyTimer = null;
+let CYST = Object.assign(Object.fromEntries(CY_LAYERS.map(l => [l[0], l[3]])), store.get("cylayers", {}));
+function initCyMap() {
+  cmap = L.map("cmap", { worldCopyJump: true, minZoom: 2, preferCanvas: true }).setView([15, 100], 2);
+  L.tileLayer(GIBS_B + "OSM_Land_Water_Map/default/default/GoogleMapsCompatible_Level9/{z}/{y}/{x}.png", { maxNativeZoom: 9, maxZoom: 14, className: "bm-land", attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · <a href="https://earthdata.nasa.gov/gibs">NASA GIBS</a> · RainViewer' }).addTo(cmap);
+  L.tileLayer(GIBS_B + "Reference_Features_15m/default/default/GoogleMapsCompatible_Level13/{z}/{y}/{x}.png", { maxNativeZoom: 13, maxZoom: 14, opacity: 0.35, className: "bm-ref" }).addTo(cmap);
+  cyGeomLayer = L.layerGroup().addTo(cmap); cyPathLayer = L.layerGroup().addTo(cmap); cyStormLayer = L.layerGroup().addTo(cmap);
+  const wrap = $("#cmap").parentElement;
+  wrap.insertAdjacentHTML("beforeend", `<div class="cylive" id="cylive"></div><div class="cylp" id="cylp"><div class="cylph" id="cylpt">LAYERS ▾</div><div class="cylpb" id="cylpb"></div></div>`);
+  $("#cylpt").onclick = () => $("#cylp").classList.toggle("closed");
+  renderCyLayerPanel();
+  CY_LAYERS.forEach(l => CYST[l[0]] && l[4] && setCyLayer(l, true));
+  setTimeout(() => cmap.invalidateSize(), 50);
 }
-let CY_LIST = [];
-$("#cylist").onclick = e => { const id = e.target.closest(".ev")?.dataset.id; const c = CY_LIST.find(x => x.id === id); if (c) selCyclone(c, true); };
+function renderCyLayerPanel() {
+  const groups = {}; CY_LAYERS.forEach(l => (groups[l[2]] = groups[l[2]] || []).push(l));
+  $("#cylpb").innerHTML = Object.entries(groups).map(([g, ls]) => `<div class="lcat">${g}</div>` + ls.map(l => { const m = l[0].startsWith("geo-") ? GEOMETA[l[0].slice(4)] : null; return `<label class="cyl"><input type="checkbox" data-id="${l[0]}" ${CYST[l[0]] ? "checked" : ""}>${m ? `<i style="background:${m[1]}"></i>` : ""}${h(l[1])}</label>`; }).join("")).join("");
+  $("#cylpb").onchange = e => { const id = e.target.dataset.id; const l = CY_LAYERS.find(x => x[0] === id); if (!l) return; CYST[id] = e.target.checked; store.set("cylayers", CYST); if (l[4]) setCyLayer(l, e.target.checked); else { renderCyStorms(); if (cySel) selCyclone(CY_LIST.find(c => c.id === cySel), false); } };
+}
+async function setCyLayer(l, on) {
+  if (on && !cyObjs[l[0]]) { const o = await l[4](); if (o && CYST[l[0]]) cyObjs[l[0]] = o.addTo(cmap); }
+  else if (!on && cyObjs[l[0]]) { cmap.removeLayer(cyObjs[l[0]]); delete cyObjs[l[0]]; }
+}
+function stormIcon(c, sel) {
+  const cat = ssCat(c.windKt), col = c.current ? cat[2] : "#5b6b82", sz = sel ? 46 : c.current ? 38 : 24;
+  return L.divIcon({ className: "", iconSize: [sz, sz], iconAnchor: [sz / 2, sz / 2], html: `<div class="cystorm ${c.current ? "live" : ""}" style="width:${sz}px;height:${sz}px;color:${col}"><svg viewBox="0 0 40 40"><g fill="currentColor"><circle cx="20" cy="20" r="5"/><path d="M20 4c-6 0-11 3-13 8 3-3 7-4 11-3-5 2-8 6-8 11h0c0 1 0 2 .3 3A12 12 0 0 1 20 4Z"/><path d="M20 36c6 0 11-3 13-8-3 3-7 4-11 3 5-2 8-6 8-11 0-1 0-2-.3-3A12 12 0 0 1 20 36Z"/></g></svg></div><div class="cylab">${h(c.name.replace(/Tropical Cyclone /i, ""))}${c.windKt ? ` · ${Math.round(c.windKt)} kt` : ""}</div>` });
+}
+async function loadCyclones() {
+  if (!cmap) initCyMap();
+  if (!CY_LIST.length) $("#cylist").innerHTML = `<div class="empty">Loading live cyclone feeds (NHC · GDACS · NASA · JTWC)…</div>`;
+  try { cyData = await api("/api/cyclones"); cyAt = Date.now(); }
+  catch (e) { $("#cylist").innerHTML = `<div class="unavail">Cyclone service unavailable: ${h(e.message)}</div>`; renderCyLive(); return; }
+  CY_LIST = cyData.storms || [];
+  const act = CY_LIST.filter(x => x.current).length;
+  $("#cymeta").textContent = `${act} active · ${CY_LIST.length} tracked`;
+  const bad = (cyData.sources || []).filter(s => !s.ok);
+  $("#cylist").innerHTML = (bad.length ? `<div class="unavail">${bad.map(s => `${h(s.name)} unavailable: ${h(s.error)}`).join("<br>")}<br><span class="mut">Other sources still shown.</span></div>` : "") +
+    (CY_LIST.length ? CY_LIST.map(c => { const cat = ssCat(c.windKt); return `<div class="ev ${cySel === c.id ? "sel" : ""}" data-id="${h(c.id)}"><div class="bar" style="background:${c.current ? cat[2] : "#2a3446"}"></div><div><div class="t">${h(c.name)} ${c.current ? '<span class="livebadge">LIVE</span>' : '<span class="mut">(ended)</span>'}</div><div class="m"><span class="lv" style="background:${cat[2]}22;color:${cat[2]};box-shadow:inset 0 0 0 1px ${cat[2]}66">${cat[1]}${c.windKt ? " " + Math.round(c.windKt) + " kt" : ""}</span>${c.alert ? `<span class="lv ${c.alert === "Red" ? "CRITICAL" : c.alert === "Orange" ? "HIGH" : "WATCH"}">${h(c.alert)}</span>` : ""}${c.country ? `<span>${h(c.country)}</span>` : ""}<span>${h((c.sources || []).join(" + "))}</span><span>${ago(c.updated)} ago</span></div></div></div>`; }).join("")
+      : `<div class="empty">No tropical cyclones reported by NHC, GDACS, NASA or JTWC.<br><br><span class="note">When a storm forms anywhere it appears here automatically.</span></div>`) +
+    ((cyData.jtwc || []).length ? `<div class="sec"><h4>JTWC BULLETIN</h4>${cyData.jtwc.slice(0, 3).map(j => `<div class="note" style="margin-bottom:6px;color:#9aa8bb"><a target="_blank" href="${h(j.link)}">${h(j.title)}</a><br>${h(j.desc.slice(0, 220))}</div>`).join("")}</div>` : "");
+  renderCyStorms(); renderCyLive();
+  $("#clegend").innerHTML = SS.slice().reverse().map(s => `<span class="lg" style="display:inline-flex;margin-right:7px"><i class="sw" style="background:${s[2]}"></i>${s[1]}</span>`).join("") + `<div class="note" style="margin-top:4px">Solid = observed track · dashed = forecast · shaded = forecast cone / wind buffers</div>`;
+  const pick = CY_LIST.find(c => c.id === cySel) || CY_LIST.find(c => c.current) || null;
+  if (pick) selCyclone(pick, !cySel); else renderCyIntel(null);
+  clearInterval(cyTimer); cyTimer = setInterval(() => { if ($("#v-cyclone").classList.contains("on")) loadCyclones(); }, 300e3);
+}
+function renderCyLive() {
+  const el = $("#cylive"); if (!el) return;
+  const s = (cyData?.sources || []).map(x => `<span class="${x.ok ? "up" : "dn"}">${x.ok ? "●" : "○"} ${h(x.name)}</span>`).join(" ");
+  const next = Math.max(0, 300 - Math.round((Date.now() - cyAt) / 1000));
+  el.innerHTML = `<b class="livedot">● LIVE</b> updated ${cyAt ? ago(cyAt) : "—"} ago · next refresh ${Math.floor(next / 60)}:${String(next % 60).padStart(2, "0")} · ${s}`;
+}
+setInterval(() => { if ($("#v-cyclone").classList.contains("on")) renderCyLive(); }, 1000);
+function renderCyStorms() {
+  if (!cyStormLayer) return; cyStormLayer.clearLayers();
+  CY_LIST.forEach(c => { if (c.lat == null || (!c.current && !CYST.ended && c.id !== cySel)) return; L.marker([c.lat, c.lon], { icon: stormIcon(c, c.id === cySel), zIndexOffset: c.current ? 1000 : 0 }).on("click", () => selCyclone(c, true)).addTo(cyStormLayer); });
+}
+$("#cylist").onclick = e => { if (e.target.closest("a")) return; const id = e.target.closest(".ev")?.dataset.id; const c = CY_LIST.find(x => x.id === id); if (c) selCyclone(c, true); };
+function parseGdacsLabel(lbl, ref) {
+  const m = /^(\d{1,2})\/(\d{1,2}) (\d{1,2}):(\d{2})/.exec(lbl || ""); if (!m) return null;
+  const r = new Date(ref || Date.now()); let y = r.getUTCFullYear();
+  if (+m[2] === 12 && r.getUTCMonth() === 0) y--; if (+m[2] === 1 && r.getUTCMonth() === 11) y++;
+  return new Date(Date.UTC(y, +m[2] - 1, +m[1], +m[3], +m[4]));
+}
+function centroid(coords) { let a = 0, b = 0, n = 0; (coords[0] || []).forEach(p => { a += p[1]; b += p[0]; n++; }); return n ? [a / n, b / n] : null; }
 async function selCyclone(c, fly = true) {
+  if (!c) return;
   cySel = c.id; $$("#cylist .ev").forEach(r => r.classList.toggle("sel", r.dataset.id === c.id));
-  renderCyIntel(c);
-  if (fly && c.lat != null && !(c.src === "GDACS" && c.eventid)) cmap.flyTo([c.lat, c.lon], 5, { duration: 0.8 });
-  if (c.src === "GDACS" && c.eventid) {
+  renderCyStorms(); cyGeomLayer.clearLayers(); cyPathLayer.clearLayers();
+  const path = []; const fc = [];
+  const updated = new Date(c.updated).getTime();
+  // observed history (NASA EONET)
+  if (CYST.history && c.track?.length) {
+    for (let i = 1; i < c.track.length; i++) { const a = c.track[i - 1], b = c.track[i]; L.polyline([[a.lat, a.lon], [b.lat, b.lon]], { color: ssCat(b.kt)[2], weight: 3, opacity: 0.95 }).addTo(cyGeomLayer); }
+    c.track.forEach(p => { path.push([p.lat, p.lon]); L.circleMarker([p.lat, p.lon], { radius: 3, color: "#000", weight: 1, fillColor: ssCat(p.kt)[2], fillOpacity: 1 }).bindTooltip(`OBSERVED · ${new Date(p.t).toUTCString().slice(5, 22)} UTC${p.kt ? ` · ${p.kt} kt (${ssCat(p.kt)[1]})` : ""}`).addTo(cyGeomLayer); });
+  }
+  // official NHC forecast (cone / track / points)
+  if (CYST.forecast && c.forecast) {
+    L.geoJSON(c.forecast, {
+      style: f => f.properties.kind === "cone" ? { color: "#ffffff", weight: 1, dashArray: "5 4", fillColor: "#ffffff", fillOpacity: 0.12 } : f.properties.kind === "windfield" ? { color: "#F0A43A", weight: 1, fillOpacity: 0.12 } : { color: "#ffffff", weight: 2, dashArray: "6 5" },
+      pointToLayer: (f, ll) => { fc.push([ll.lat, ll.lng]); return L.circleMarker(ll, { radius: 5, color: "#fff", weight: 1.5, fillColor: "#A371F7", fillOpacity: 1 }); },
+      onEachFeature: (f, l) => l.bindTooltip(`FORECAST (NHC) · ${h(f.properties.name || "")}<br><span class="mut">${h((f.properties.desc || "").slice(0, 160))}</span>`)
+    }).addTo(cyGeomLayer);
+  }
+  if (fly && c.lat != null) cmap.flyTo([c.lat, c.lon], 5, { duration: 0.7 });
+  renderCyIntel(c, path.concat(fc));
+  // GDACS track / forecast positions / wind buffers
+  if (c.gdacsEventId && (CYST.forecast || CYST.windbuf || CYST.history)) {
     try {
-      const gu = `/api/tcgeom?eventid=${c.eventid}&episodeid=${c.episode}`;
+      const gu = `/api/tcgeom?eventid=${c.gdacsEventId}&episodeid=${c.gdacsEpisode}`;
       const g = await api(gu).catch(() => new Promise(r => setTimeout(r, 2500)).then(() => api(gu)));
       if (cySel !== c.id) return;
-      cLayer.eachLayer(l => l._qgiGeom && cLayer.removeLayer(l));
-      const gl = L.geoJSON(g, {
-        filter: f => !/Centroid/.test(f.properties.Class || ""),
-        style: f => { const k = f.properties.Class || ""; if (/Line/.test(k)) return { color: "#39C5CF", weight: 2, dashArray: /1$/.test(k) ? "6 4" : null }; const col = /Red/.test(k) ? "#FF3B4E" : /Orange/.test(k) ? "#F07A2A" : "#2BD67B"; return { color: col, weight: 0.6, fillColor: col, fillOpacity: /km\/h/.test(f.properties.polygonlabel || "") ? 0.18 : 0.06 }; },
-        pointToLayer: (f, ll) => L.circleMarker(ll, { radius: 3.5, color: "#fff", weight: 1, fillColor: "#A371F7", fillOpacity: 1 }),
-        onEachFeature: (f, l) => { const p = f.properties; const lab = [p.polygonlabel, p.name, p.trackdate, p.windspeed && p.windspeed + " km/h"].filter(Boolean).join(" · "); lab && l.bindTooltip(h(lab)); }
+      const pos = {};
+      (g.features || []).forEach(f => {
+        const p = f.properties || {}, k = p.Class || "", gm = f.geometry;
+        if (gm.type === "LineString" && (CYST.history || CYST.forecast)) {
+          L.polyline(gm.coordinates.map(x => [x[1], x[0]]), { color: segCol(p.polygonlabel), weight: 3, opacity: 0.9 }).bindTooltip(`Track segment · ${h(p.polygonlabel || "")}`).addTo(cyGeomLayer);
+          gm.coordinates.forEach(x => path.push([x[1], x[0]]));
+        } else if (gm.type === "Polygon") {
+          const t = parseGdacsLabel(p.polygonlabel, c.updated);
+          const isWindbuf = /km\/h/.test(p.polygonlabel || "");
+          if (t && /Green/.test(k)) { const ce = centroid(gm.coordinates); if (ce) pos[+t] = ce; }
+          if (!CYST.windbuf) return;
+          const col = /Red/.test(k) ? "#FF3B4E" : /Orange/.test(k) ? "#F07A2A" : "#2BD67B";
+          const future = t && +t > updated;
+          L.polygon(gm.coordinates.map(r => r.map(x => [x[1], x[0]])), { color: col, weight: 0.6, dashArray: future ? "4 3" : null, fillColor: col, fillOpacity: isWindbuf ? 0.2 : future ? 0.05 : 0.08 }).bindTooltip(`${future ? "FORECAST" : "OBSERVED"} wind ≥ ${/Red/.test(k) ? 120 : /Orange/.test(k) ? 90 : 60} km/h · ${h(p.polygonlabel || "")}`).addTo(cyGeomLayer);
+        }
       });
-      gl._qgiGeom = true; gl.addTo(cLayer);
-      cmap.invalidateSize();
-      if (fly) try { cmap.fitBounds(gl.getBounds(), { padding: [60, 60], maxZoom: 6 }); } catch { }
-    } catch (e) { toast({ level: "WATCH", title: "GDACS track geometry unavailable: " + e.message }); }
+      const times = Object.keys(pos).map(Number).sort((a, b) => a - b);
+      const fut = times.filter(t => t > updated);
+      if (CYST.forecast && fut.length) {
+        const pts = [[c.lat, c.lon], ...fut.map(t => pos[t])];
+        L.polyline(pts, { color: "#fff", weight: 2, dashArray: "7 6", opacity: 0.9 }).addTo(cyGeomLayer);
+        fut.forEach(t => { fc.push(pos[t]); L.circleMarker(pos[t], { radius: 5, color: "#fff", weight: 1.5, fillColor: "#A371F7", fillOpacity: 1 }).bindTooltip(`<b>FORECAST</b> position · ${new Date(t).toUTCString().slice(5, 22)} UTC<br><span class="mut">GDACS (from official agency forecast)</span>`, { permanent: false }).addTo(cyGeomLayer); });
+      }
+      times.filter(t => t <= updated).forEach(t => path.push(pos[t]));
+      if (fly) try { const all = path.concat(fc, [[c.lat, c.lon]]); if (all.length > 1) cmap.fitBounds(L.latLngBounds(all), { padding: [70, 70], maxZoom: 6 }); } catch { }
+      renderCyIntel(c, path.concat(fc), fut.length);
+    } catch (e) { $("#cyintel .gerr")?.remove(); $("#cyintel").insertAdjacentHTML("afterbegin", `<div class="unavail gerr">GDACS track/forecast geometry unavailable: ${h(e.message)}</div>`); }
   }
 }
-function renderCyIntel(c) {
-  if (!c) { $("#cyintel").innerHTML = `<div class="empty">No storm selected.</div>`; return; }
-  const assets = c.assets || (c.src === "NHC" ? [{ s: "NG=F", d: "vol", why: "Check track vs Gulf infrastructure" }, { s: "RB=F", d: "up", why: "Refinery exposure if Gulf landfall" }, { s: "TRV", d: "down", why: "Insured-loss exposure" }, { s: "GNRC", d: "up", why: "Generator demand" }] : []);
-  const cat = c.wind ? (c.wind >= 137 ? "Cat 5" : c.wind >= 113 ? "Cat 4" : c.wind >= 96 ? "Cat 3" : c.wind >= 83 ? "Cat 2" : c.wind >= 64 ? "Cat 1" : c.wind >= 34 ? "Tropical storm" : "Depression") : "";
-  $("#cyintel").innerHTML = `<div class="sec"><span class="kd">${h(c.src)}</span><h3>${h(c.name)}</h3><div class="kv"><span>Status</span><b>${c.current ? "ACTIVE" : "Ended / archived"}</b><span>Intensity</span><b>${h(c.cls || "—")}${c.wind ? ` · ${c.wind} kt (${cat})` : ""}</b>${c.pres ? `<span>Pressure</span><b>${h(c.pres)} mb</b>` : ""}${c.mv ? `<span>Movement</span><b>${h(c.mv)}</b>` : ""}<span>Position</span><b>${c.lat?.toFixed(1)}°, ${c.lon?.toFixed(1)}°</b>${c.exposure ? `<span>Exposure</span><b>${h(c.exposure)}</b>` : ""}${c.country ? `<span>Countries</span><b>${h(c.country)}</b>` : ""}${c.region ? `<span>Market region</span><b>${h(c.region)}</b>` : ""}<span>Last update</span><b>${new Date(c.upd).toUTCString().slice(5, 22)} UTC</b></div></div>
-  <div class="sec"><h4>TRADABLE EXPOSURE</h4>${assets.map(assetRow).join("") || '<div class="mut">Open ocean — no direct mapping.</div>'}</div>
-  ${assets[0] ? `<div class="sec"><h4>ONE-CLICK TRADE</h4><div class="links">${tradeLinks(assets[0].s)}</div></div>` : ""}
-  <div class="sec"><h4>OFFICIAL PRODUCTS</h4><div class="links">${c.link ? `<a class="lnk" target="_blank" href="${h(c.link)}">${c.src === "NHC" ? "NHC public advisory" : "GDACS report"} ↗</a>` : ""}${c.graphics ? `<a class="lnk" target="_blank" href="${h(c.graphics)}">NHC cone & models ↗</a>` : ""}<a class="lnk" target="_blank" href="https://www.metoc.navy.mil/jtwc/jtwc.html">JTWC (W.Pac/Indian) ↗</a><a class="lnk" target="_blank" href="https://www.nhc.noaa.gov/">NHC ↗</a></div>
-  <p class="note" style="margin-top:8px">Track/wind buffers are GDACS products derived from official agency forecasts (JTWC/NHC/RSMCs). Model spaghetti tracks are not redistributed by these free feeds, so they are not shown rather than invented. Use the NHC link for official cone & model guidance.</p></div>
-  <div class="sec"><h4>PLAYBOOK</h4>${["hurr-energy", "hurr-revision", "hurr-ri", "hurr-insure"].map(id => { const s = STRATS.find(x => x.id === id); return `<div class="sc" data-st="${id}" style="padding:6px 0;border:0"><div><div class="n" style="font-size:11.5px">${h(s.name)}</div><div class="c">${s.horizon} · ${s.diff}</div></div><span class="lnk">Open →</span></div>`; }).join("")}</div>`;
+const PATH_CATS = ["oilterminals", "refineries", "lng", "oilfields", "nuclear", "ports", "grainports", "semis", "airports", "bases", "mines"];
+function assetsInPath(pts, km = 450) {
+  if (!pts.length) return [];
+  const out = [];
+  PATH_CATS.forEach(cat => GEO[cat].forEach(([n, la, lo, desc, syms]) => {
+    let best = 1e9; pts.forEach(p => { const d = haversine(p[0], p[1], la, lo); if (d < best) best = d; });
+    if (best <= km) out.push({ cat, n, la, lo, desc, syms, d: best });
+  }));
+  return out.sort((a, b) => a.d - b.d).slice(0, 30);
 }
-$("#cyintel").onclick = e => { const s = e.target.closest(".sy")?.dataset.s; if (s) { showTab("terminal"); return loadChart(TC, s); } const st = e.target.closest("[data-st]")?.dataset.st; if (st) { store.set("strat", st); showTab("strategies"); } };
-onShow.cyclone = loadCyclones;
+function renderCyIntel(c, pts = [], nFc = 0) {
+  if (!c) { $("#cyintel").innerHTML = `<div class="empty">No storm selected.</div>`; return; }
+  const cat = ssCat(c.windKt);
+  const path = assetsInPath(pts.length ? pts : [[c.lat, c.lon]]);
+  cyPathLayer.clearLayers();
+  if (CYST.inpath) path.forEach(a => L.circleMarker([a.la, a.lo], { radius: 9, color: "#FF3B4E", weight: 2, fill: false, dashArray: "3 2" }).bindTooltip(`IN PATH · ${h(a.n)} · ${Math.round(a.d)} km from track`).addTo(cyPathLayer));
+  let chart = "";
+  if (c.track?.length > 1) {
+    const W = 340, H = 90, kts = c.track.map(p => p.kt || 0), mx = Math.max(140, ...kts), t0 = +new Date(c.track[0].t), t1 = +new Date(c.track[c.track.length - 1].t) || t0 + 1;
+    const X = t => ((+new Date(t) - t0) / (t1 - t0 || 1)) * (W - 30) + 28, Y = v => H - 12 - (v / mx) * (H - 20);
+    chart = `<div class="sec"><h4>INTENSITY HISTORY (NASA EONET, kt)</h4><svg width="100%" viewBox="0 0 ${W} ${H}">${[34, 64, 96, 137].map(v => `<line x1="28" x2="${W}" y1="${Y(v)}" y2="${Y(v)}" stroke="${ssCat(v)[2]}" stroke-dasharray="2 3" opacity=".5"/><text x="0" y="${Y(v) + 3}" fill="${ssCat(v)[2]}" font-size="8" font-family="monospace">${ssCat(v)[1]}</text>`).join("")}<polyline fill="none" stroke="#fff" stroke-width="1.6" points="${c.track.map(p => X(p.t) + "," + Y(p.kt || 0)).join(" ")}"/>${c.track.map(p => `<circle cx="${X(p.t)}" cy="${Y(p.kt || 0)}" r="1.8" fill="${ssCat(p.kt)[2]}"/>`).join("")}</svg><div class="gl mono" style="display:flex;justify-content:space-between;color:#6B7A90;font-size:9px"><span>${new Date(t0).toUTCString().slice(5, 16)}</span><span>${new Date(t1).toUTCString().slice(5, 16)}</span></div></div>`;
+  }
+  const assets = c.assets?.length ? c.assets : [];
+  $("#cyintel").innerHTML = `<div class="sec"><div style="display:flex;gap:6px;align-items:center">${c.current ? '<span class="livebadge">LIVE</span>' : '<span class="pill">ENDED</span>'}${(c.sources || []).map(s => `<span class="kd">${h(s)}</span>`).join(" ")}</div><h3>${h(c.name)}</h3>
+   <div class="cybig"><b style="color:${cat[2]}">${cat[1]}</b><span>${c.windKt ? Math.round(c.windKt) + " kt · " + Math.round(c.windKmh || c.windKt * 1.852) + " km/h" : "wind n/a"}</span></div>
+   <div class="kv"><span>Classification</span><b>${h(c.class || "—")}</b>${c.pressure ? `<span>Central pressure</span><b>${h(c.pressure)} mb</b>` : ""}${c.movement ? `<span>Movement</span><b>${h(c.movement)}</b>` : ""}<span>Position</span><b>${c.lat?.toFixed(1)}°, ${c.lon?.toFixed(1)}°</b>${c.alert ? `<span>GDACS alert</span><b>${h(c.alert)}</b>` : ""}${c.exposure ? `<span>Exposure</span><b>${h(c.exposure)}</b>` : ""}${c.country ? `<span>Countries</span><b>${h(c.country)}</b>` : ""}${c.region ? `<span>Market region</span><b>${h(c.region)}</b>` : ""}<span>Forecast positions</span><b>${nFc || (c.forecast ? "NHC official" : "none published")}</b><span>Last update</span><b>${new Date(c.updated).toUTCString().slice(5, 22)} UTC</b></div></div>
+  ${chart}
+  <div class="sec"><h4>ASSETS IN THE STORM'S PATH <span>≤450 km from observed/forecast track</span></h4>${path.length ? path.map(a => `<div class="ar" style="grid-template-columns:1fr 64px auto"><span><i class="sw" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${GEOMETA[a.cat][1]};margin-right:5px"></i><b style="font-size:11px">${h(a.n)}</b><br><span class="wy">${h(GEOMETA[a.cat][0])} · ${h(a.desc)}</span></span><span class="q">${Math.round(a.d)} km</span><span>${(a.syms || "").split(",").filter(Boolean).slice(0, 2).map(s => `<span class="tk" data-s="${h(s)}">${h(s)}</span>`).join(" ")}</span></div>`).join("") : '<div class="mut">No mapped energy, nuclear, port or industrial assets within 450 km.</div>'}</div>
+  <div class="sec"><h4>TRADABLE EXPOSURE</h4>${assets.map(assetRow).join("") || '<div class="mut">Open ocean — no direct market mapping.</div>'}</div>
+  ${assets[0] ? `<div class="sec"><h4>ONE-CLICK TRADE</h4><div class="links">${tradeLinks(assets[0].s)}</div></div>` : ""}
+  <div class="sec"><h4>OFFICIAL PRODUCTS</h4><div class="links">${c.link ? `<a class="lnk" target="_blank" href="${h(c.link)}">Advisory / report ↗</a>` : ""}${c.graphics ? `<a class="lnk" target="_blank" href="${h(c.graphics)}">NHC cone & models ↗</a>` : ""}${c.gdacsEventId ? `<a class="lnk" target="_blank" href="https://www.gdacs.org/report.aspx?eventtype=TC&eventid=${c.gdacsEventId}">GDACS report ↗</a>` : ""}<a class="lnk" target="_blank" href="https://www.metoc.navy.mil/jtwc/jtwc.html">JTWC ↗</a><a class="lnk" target="_blank" href="https://www.nhc.noaa.gov/">NHC ↗</a><a class="lnk" target="_blank" href="https://zoom.earth/">Zoom Earth ↗</a></div>
+  <p class="note" style="margin-top:8px">Forecast positions and cones are official agency forecasts redistributed by NHC/GDACS (JTWC, RSMCs). Model spaghetti tracks are not in these free feeds, so none are drawn rather than invented.</p></div>
+  <div class="sec"><h4>PLAYBOOK</h4>${["hurr-energy", "hurr-revision", "hurr-ri", "hurr-insure"].map(id => { const s = STRATS.find(x => x.id === id); return `<div class="sc" data-st="${id}" style="padding:6px 0;border:0"><div><div class="n" style="font-size:11.5px">${h(s.name)}</div><div class="c">${s.horizon} · ${s.diff}</div></div><span class="lnk">Open →</span></div>`; }).join("")}</div>`;
+  const syms = [...new Set(path.flatMap(a => (a.syms || "").split(",").filter(Boolean)))]; if (syms.length) pollQuotes(syms.slice(0, 20));
+}
+$("#cyintel").onclick = e => { const s = e.target.closest(".sy,.tk")?.dataset.s; if (s) { showTab("terminal"); return loadChart(TC, s); } const st = e.target.closest("[data-st]")?.dataset.st; if (st) { store.set("strat", st); showTab("strategies"); } };
+onShow.cyclone = () => { loadCyclones(); setTimeout(() => cmap && cmap.invalidateSize(), 60); };
+
 
 /* ================= MARKETS ================= */
 let MC;
@@ -799,14 +929,21 @@ function renderPaper() {
 
 /* ================= PREDICTION MARKETS ================= */
 const PMTAGS = { geopolitics: "Geopolitics", "middle-east": "Middle East", ukraine: "Ukraine", china: "China", world: "World", economy: "Economy", commodities: "Commodities", weather: "Weather", climate: "Climate" };
+const PMSRC = { auto: "Auto", polymarket: "Polymarket", kalshi: "Kalshi", manifold: "Manifold" };
 async function loadPM() {
-  if (!$("#pmtags").innerHTML) { $("#pmtags").innerHTML = Object.entries(PMTAGS).map(([k, n]) => `<button data-k="${k}">${n}</button>`).join(""); $("#pmtags").onclick = e => { const k = e.target.dataset.k; if (k) { store.set("pmtag", k); loadPM(); } }; }
-  const tag = store.get("pmtag", "geopolitics"); $$("#pmtags button").forEach(b => b.classList.toggle("on", b.dataset.k === tag));
-  $("#pmlist").innerHTML = `<div class="empty">Loading Polymarket…</div>`;
+  if (!$("#pmtags").innerHTML) {
+    $("#pmtags").innerHTML = Object.entries(PMTAGS).map(([k, n]) => `<button data-k="${k}">${n}</button>`).join("") + `<span style="width:10px"></span>` + Object.entries(PMSRC).map(([k, n]) => `<button data-src="${k}">${n}</button>`).join("");
+    $("#pmtags").onclick = e => { const k = e.target.dataset.k, sr = e.target.dataset.src; if (k) store.set("pmtag", k); if (sr) store.set("pmsrc", sr); if (k || sr) loadPM(); };
+  }
+  const tag = store.get("pmtag", "geopolitics"), src = store.get("pmsrc", "auto");
+  $$("#pmtags button").forEach(b => b.classList.toggle("on", b.dataset.k === tag || b.dataset.src === src));
+  $("#pmlist").innerHTML = `<div class="empty">Loading prediction markets…</div>`;
   try {
-    const d = await api("/api/predict?tag=" + tag);
-    $("#pmlist").innerHTML = (d || []).filter(e => e.markets?.length).map(e => `<div class="pm"><h5><a target="_blank" href="https://polymarket.com/event/${encodeURIComponent(e.slug)}">${h(e.title)} ↗</a></h5><div class="mut" style="margin-bottom:6px">24h vol $${Math.round(e.vol24).toLocaleString()} · liquidity $${Math.round(e.liq).toLocaleString()}${e.end ? " · ends " + h(e.end.slice(0, 10)) : ""}</div>${e.markets.map(m => `<div class="pmr"><span>${h(m.q)}</span><div class="b"><i style="width:${(m.yes * 100).toFixed(0)}%"></i></div><b>${(m.yes * 100).toFixed(0)}%</b></div>`).join("")}</div>`).join("") || `<div class="empty">No active markets for this tag.</div>`;
-  } catch (e) { $("#pmlist").innerHTML = `<div class="unavail">Polymarket unavailable: ${h(e.message)}</div>`; }
+    const d = await api("/api/predict?tag=" + tag + (src !== "auto" ? "&src=" + src : ""));
+    const evs = (d.events || []).filter(e => e.markets?.length);
+    const note = `<div class="pm" style="grid-column:1/-1;padding:8px 10px"><span class="mut">Source: <b style="color:#fff">${h(PMSRC[d.source] || d.source)}</b>${d.source === "manifold" ? " (play-money market)" : ""}${(d.errors || []).length ? ` · fallback used because ${h(d.errors.join(" · "))}` : ""}. Prices are market-implied probabilities, not forecasts. Check exact resolution rules before trading.</span></div>`;
+    $("#pmlist").innerHTML = note + (evs.map(e => `<div class="pm"><h5><a target="_blank" href="${h(e.url)}">${h(e.title)} ↗</a></h5><div class="mut" style="margin-bottom:6px">${e.vol24 ? `24h vol ${Math.round(e.vol24).toLocaleString()} · ` : ""}${e.liq ? `liquidity/volume ${Math.round(e.liq).toLocaleString()}` : ""}${e.end ? " · ends " + h(e.end.slice(0, 10)) : ""}</div>${e.markets.map(m => `<div class="pmr"><span>${h(m.q)}</span><div class="b"><i style="width:${(m.yes * 100).toFixed(0)}%"></i></div><b>${(m.yes * 100).toFixed(0)}%</b></div>`).join("")}</div>`).join("") || `<div class="empty">No active markets for this topic.</div>`);
+  } catch (e) { $("#pmlist").innerHTML = `<div class="unavail">Prediction markets unavailable: ${h(e.message)}</div>`; }
 }
 onShow.predict = loadPM;
 

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -55,9 +56,22 @@ func fetchT(u string, client *http.Client, tries int) ([]byte, error) {
 			}
 			continue
 		}
+		if looksHTML(b) {
+			// An HTML page where XML/JSON was expected (e.g. a site's anti-bot page):
+			// report it as unavailable instead of parsing it as data.
+			return nil, fmt.Errorf("source returned a web page instead of data (access blocked)")
+		}
 		return b, nil
 	}
 	return nil, lastErr
+}
+
+func looksHTML(b []byte) bool {
+	head := bytes.ToLower(bytes.TrimSpace(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf"))))
+	if len(head) > 300 {
+		head = head[:300]
+	}
+	return bytes.HasPrefix(head, []byte("<!doctype html")) || bytes.HasPrefix(head, []byte("<html"))
 }
 
 // ---------- cache (stale-while-error) ----------
@@ -205,7 +219,23 @@ func registerAPI(mux *http.ServeMux) {
 func warmup() {
 	go func() { getNatural() }()
 	go func() { getNews() }()
+	go func() {
+		rec := httptestRecorder{}
+		handleCyclones(&rec, nil)
+	}()
 }
+
+// httptestRecorder is a minimal ResponseWriter used to pre-warm cached handlers at startup.
+type httptestRecorder struct{ h http.Header }
+
+func (r *httptestRecorder) Header() http.Header {
+	if r.h == nil {
+		r.h = http.Header{}
+	}
+	return r.h
+}
+func (r *httptestRecorder) Write(b []byte) (int, error) { return len(b), nil }
+func (r *httptestRecorder) WriteHeader(int)             {}
 
 // ---------- Markets (Yahoo Finance public chart/spark endpoints) ----------
 
@@ -404,42 +434,73 @@ func handleRadar(w http.ResponseWriter, r *http.Request) {
 
 // ---------- Prediction markets (Polymarket public Gamma API, read-only) ----------
 
+type pmMarket struct {
+	Q      string  `json:"q"`
+	Yes    float64 `json:"yes"`
+	Vol    float64 `json:"vol"`
+	Change float64 `json:"chg"`
+}
+type pmEvent struct {
+	Title   string     `json:"title"`
+	URL     string     `json:"url"`
+	Vol24   float64    `json:"vol24"`
+	Liq     float64    `json:"liq"`
+	End     string     `json:"end"`
+	Markets []pmMarket `json:"markets"`
+}
+
+// Prediction markets: Polymarket first, then Kalshi, then Manifold. Polymarket is
+// unreachable from some countries, so the others keep the tab working.
 func handlePredict(w http.ResponseWriter, r *http.Request) {
 	tag := r.URL.Query().Get("tag")
 	ok := map[string]bool{"geopolitics": true, "world": true, "middle-east": true, "ukraine": true, "china": true, "weather": true, "climate": true, "economy": true, "politics": true, "commodities": true}
 	if !ok[tag] {
 		tag = "geopolitics"
 	}
-	u := "https://gamma-api.polymarket.com/events?limit=40&active=true&closed=false&order=volume24hr&ascending=false&tag_slug=" + tag
-	b, at, err := cached("pm:"+tag, 5*time.Minute, func() ([]byte, error) { return fetch(u) })
-	setStatus("Polymarket (prediction markets)", "https://polymarket.com", "Market prices from Polymarket public Gamma API (read-only)", 1, err)
-	if b == nil {
-		writeRaw(w, nil, at, err)
-		return
+	order := []string{"polymarket", "kalshi", "manifold"}
+	if src := r.URL.Query().Get("src"); src == "kalshi" || src == "manifold" || src == "polymarket" {
+		order = []string{src}
 	}
-	// slim payload
+	var errs []string
+	for _, src := range order {
+		var evs []pmEvent
+		var err error
+		switch src {
+		case "polymarket":
+			evs, err = predictPolymarket(tag)
+		case "kalshi":
+			evs, err = predictKalshi(tag)
+		case "manifold":
+			evs, err = predictManifold(tag)
+		}
+		if err == nil && len(evs) > 0 {
+			writeJSON(w, map[string]any{"source": src, "events": evs, "errors": errs})
+			return
+		}
+		if err == nil {
+			err = errors.New("no open markets for this topic")
+		}
+		errs = append(errs, src+": "+err.Error())
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(502)
+	json.NewEncoder(w).Encode(map[string]any{"error": strings.Join(errs, " · ")})
+}
+
+func predictPolymarket(tag string) ([]pmEvent, error) {
+	u := "https://gamma-api.polymarket.com/events?limit=40&active=true&closed=false&order=volume24hr&ascending=false&tag_slug=" + tag
+	b, _, err := cached("pm:"+tag, 5*time.Minute, func() ([]byte, error) { return fetch(u) })
+	setStatus("Polymarket (prediction markets)", "https://polymarket.com", "Polymarket public Gamma API (read-only)", 1, err)
+	if b == nil {
+		return nil, err
+	}
 	var evs []map[string]any
 	if json.Unmarshal(b, &evs) != nil {
-		writeRaw(w, nil, at, errors.New("bad payload"))
-		return
+		return nil, errors.New("unexpected reply")
 	}
-	type mk struct {
-		Q      string  `json:"q"`
-		Yes    float64 `json:"yes"`
-		Vol    float64 `json:"vol"`
-		Change float64 `json:"chg"`
-	}
-	type ev struct {
-		Title   string  `json:"title"`
-		Slug    string  `json:"slug"`
-		Vol24   float64 `json:"vol24"`
-		Liq     float64 `json:"liq"`
-		End     string  `json:"end"`
-		Markets []mk    `json:"markets"`
-	}
-	var out []ev
+	var out []pmEvent
 	for _, e := range evs {
-		x := ev{Title: str(e["title"]), Slug: str(e["slug"]), Vol24: num(e["volume24hr"]), Liq: num(e["liquidity"]), End: str(e["endDate"])}
+		x := pmEvent{Title: str(e["title"]), URL: "https://polymarket.com/event/" + url.PathEscape(str(e["slug"])), Vol24: num(e["volume24hr"]), Liq: num(e["liquidity"]), End: str(e["endDate"])}
 		ms, _ := e["markets"].([]any)
 		for _, mm := range ms {
 			m, _ := mm.(map[string]any)
@@ -456,17 +517,178 @@ func handlePredict(w http.ResponseWriter, r *http.Request) {
 			if q == "" {
 				q = str(m["question"])
 			}
-			x.Markets = append(x.Markets, mk{Q: q, Yes: yes, Vol: num(m["volumeNum"]), Change: num(m["oneDayPriceChange"])})
+			x.Markets = append(x.Markets, pmMarket{Q: q, Yes: yes, Vol: num(m["volumeNum"]), Change: num(m["oneDayPriceChange"])})
 		}
 		sort.Slice(x.Markets, func(i, j int) bool { return x.Markets[i].Yes > x.Markets[j].Yes })
 		if len(x.Markets) > 6 {
 			x.Markets = x.Markets[:6]
 		}
-		out = append(out, x)
+		if len(x.Markets) > 0 {
+			out = append(out, x)
+		}
 	}
-	var buf bytes.Buffer
-	json.NewEncoder(&buf).Encode(out)
-	writeRaw(w, buf.Bytes(), at, err)
+	return out, nil
+}
+
+var kalshiTopic = map[string]struct {
+	cats []string
+	kw   string
+}{
+	"geopolitics": {[]string{"World", "Politics"}, `(?i)war|iran|israel|russia|ukrain|china|taiwan|nato|military|strike|ceasefire|nuclear|sanction|korea|venezuela|tariff`},
+	"world":       {[]string{"World"}, `.`},
+	"middle-east": {[]string{"World", "Politics"}, `(?i)iran|israel|gaza|hamas|hezbollah|saudi|yemen|houthi|syria|iraq|lebanon|middle east`},
+	"ukraine":     {[]string{"World", "Politics"}, `(?i)ukrain|russia|putin|zelensk|crimea`},
+	"china":       {[]string{"World", "Politics", "Economics"}, `(?i)china|chinese|taiwan|xi jinping|beijing`},
+	"politics":    {[]string{"Politics", "Elections"}, `.`},
+	"economy":     {[]string{"Economics", "Financials"}, `.`},
+	"commodities": {[]string{"Economics", "Financials"}, `(?i)oil|gold|gas|wheat|corn|copper|commodit|crude|brent|wti`},
+	"weather":     {[]string{"Climate and Weather"}, `.`},
+	"climate":     {[]string{"Climate and Weather"}, `.`},
+}
+
+func predictKalshi(tag string) ([]pmEvent, error) {
+	b, _, err := cached("kalshi-events", 10*time.Minute, func() ([]byte, error) {
+		var all []json.RawMessage
+		cursor := ""
+		for page := 0; page < 4; page++ {
+			u := "https://api.elections.kalshi.com/trade-api/v2/events?status=open&limit=200&with_nested_markets=true"
+			if cursor != "" {
+				u += "&cursor=" + url.QueryEscape(cursor)
+			}
+			pb, err := fetch(u)
+			if err != nil {
+				if len(all) > 0 {
+					break
+				}
+				return nil, err
+			}
+			var d struct {
+				Events []json.RawMessage `json:"events"`
+				Cursor string            `json:"cursor"`
+			}
+			if json.Unmarshal(pb, &d) != nil {
+				break
+			}
+			all = append(all, d.Events...)
+			if d.Cursor == "" {
+				break
+			}
+			cursor = d.Cursor
+			time.Sleep(400 * time.Millisecond)
+		}
+		return json.Marshal(all)
+	})
+	setStatus("Kalshi (prediction markets)", "https://kalshi.com", "Kalshi public market data (read-only)", 1, err)
+	if b == nil {
+		return nil, err
+	}
+	var evs []struct {
+		Title    string `json:"title"`
+		Sub      string `json:"sub_title"`
+		Category string `json:"category"`
+		Ticker   string `json:"event_ticker"`
+		Series   string `json:"series_ticker"`
+		Markets  []struct {
+			Title  string `json:"title"`
+			YesSub string `json:"yes_sub_title"`
+			Last   string `json:"last_price_dollars"`
+			Prev   string `json:"previous_price_dollars"`
+			Bid    string `json:"yes_bid_dollars"`
+			Ask    string `json:"yes_ask_dollars"`
+			Vol24  string `json:"volume_24h_fp"`
+			Vol    string `json:"volume_fp"`
+			Close  string `json:"close_time"`
+		} `json:"markets"`
+	}
+	json.Unmarshal(b, &evs)
+	t := kalshiTopic[tag]
+	re := regexp.MustCompile(t.kw)
+	var out []pmEvent
+	for _, e := range evs {
+		catOK := false
+		for _, c := range t.cats {
+			if e.Category == c {
+				catOK = true
+			}
+		}
+		if !catOK || !re.MatchString(e.Title+" "+e.Sub) {
+			continue
+		}
+		x := pmEvent{Title: e.Title, URL: "https://kalshi.com/markets/" + strings.ToLower(e.Series)}
+		for _, m := range e.Markets {
+			yes := num(m.Last)
+			if yes == 0 {
+				yes = (num(m.Bid) + num(m.Ask)) / 2
+			}
+			q := m.YesSub
+			if q == "" {
+				q = m.Title
+			}
+			x.Vol24 += num(m.Vol24)
+			x.Liq += num(m.Vol)
+			x.End = m.Close
+			x.Markets = append(x.Markets, pmMarket{Q: q, Yes: yes, Vol: num(m.Vol), Change: yes - num(m.Prev)})
+		}
+		sort.Slice(x.Markets, func(i, j int) bool { return x.Markets[i].Yes > x.Markets[j].Yes })
+		if len(x.Markets) > 6 {
+			x.Markets = x.Markets[:6]
+		}
+		if len(x.Markets) > 0 {
+			out = append(out, x)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Liq > out[j].Liq })
+	if len(out) > 40 {
+		out = out[:40]
+	}
+	return out, nil
+}
+
+var manifoldTerms = map[string][]string{
+	"geopolitics": {"war", "nuclear", "invasion"}, "world": {"war", "ceasefire"}, "middle-east": {"iran", "israel"},
+	"ukraine": {"ukraine", "russia"}, "china": {"taiwan", "china"}, "politics": {"election"}, "economy": {"recession", "inflation"},
+	"commodities": {"oil", "gold"}, "weather": {"hurricane", "temperature"}, "climate": {"climate", "temperature"},
+}
+
+func predictManifold(tag string) ([]pmEvent, error) {
+	var out []pmEvent
+	var lastErr error
+	seen := map[string]bool{}
+	for _, term := range manifoldTerms[tag] {
+		u := "https://api.manifold.markets/v0/search-markets?limit=20&filter=open&sort=liquidity&contractType=BINARY&term=" + url.QueryEscape(term)
+		b, _, err := cached("mf:"+term, 10*time.Minute, func() ([]byte, error) { return fetch(u) })
+		setStatus("Manifold (prediction markets)", "https://manifold.markets", "Manifold Markets public API (play-money, read-only)", 1, err)
+		if b == nil {
+			lastErr = err
+			continue
+		}
+		var ms []struct {
+			Q     string  `json:"question"`
+			P     float64 `json:"probability"`
+			V24   float64 `json:"volume24Hours"`
+			Vol   float64 `json:"volume"`
+			Liq   float64 `json:"totalLiquidity"`
+			URL   string  `json:"url"`
+			Close int64   `json:"closeTime"`
+		}
+		json.Unmarshal(b, &ms)
+		for _, m := range ms {
+			if seen[m.URL] {
+				continue
+			}
+			seen[m.URL] = true
+			end := ""
+			if m.Close > 0 {
+				end = time.UnixMilli(m.Close).UTC().Format(time.RFC3339)
+			}
+			out = append(out, pmEvent{Title: m.Q, URL: m.URL, Vol24: m.V24, Liq: m.Liq, End: end, Markets: []pmMarket{{Q: "Yes", Yes: m.P, Vol: m.Vol}}})
+		}
+	}
+	if len(out) == 0 && lastErr != nil {
+		return nil, lastErr
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Liq > out[j].Liq })
+	return out, nil
 }
 
 func str(v any) string {

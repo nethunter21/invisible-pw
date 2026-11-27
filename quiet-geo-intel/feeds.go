@@ -288,12 +288,12 @@ func fetchEONET() ([]Event, error) {
 // ---------- NHC ----------
 
 type NHCStorm struct {
-	ID             string `json:"id"`
-	BinNumber      string `json:"binNumber"`
-	Name           string `json:"name"`
-	Classification string `json:"classification"`
-	Intensity      string `json:"intensity"`
-	Pressure       string `json:"pressure"`
+	ID             string  `json:"id"`
+	BinNumber      string  `json:"binNumber"`
+	Name           string  `json:"name"`
+	Classification string  `json:"classification"`
+	Intensity      string  `json:"intensity"`
+	Pressure       string  `json:"pressure"`
 	LatNum         float64 `json:"latitudeNumeric"`
 	LonNum         float64 `json:"longitudeNumeric"`
 	MovementDir    float64 `json:"movementDir"`
@@ -392,24 +392,6 @@ func getNatural() []byte {
 func handleNatural(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(getNatural())
-}
-
-func handleCyclones(w http.ResponseWriter, r *http.Request) {
-	var wg sync.WaitGroup
-	var g []Event
-	var nhc []NHCStorm
-	wg.Add(2)
-	go func() { defer wg.Done(); g, _ = fetchGDACS() }()
-	go func() { defer wg.Done(); nhc, _ = fetchNHC() }()
-	wg.Wait()
-	var tcs []Event
-	for _, e := range g {
-		if e.Kind == "TC" {
-			enrichNatural(&e)
-			tcs = append(tcs, e)
-		}
-	}
-	writeJSON(w, map[string]any{"gdacs": tcs, "nhc": nhc, "generated": time.Now().UTC()})
 }
 
 func handleTCGeom(w http.ResponseWriter, r *http.Request) {
@@ -583,7 +565,7 @@ var newsFeeds = []feedDef{
 	{"DW World", "https://rss.dw.com/rdf/rss-en-world"},
 	{"France 24", "https://www.france24.com/en/rss"},
 	{"UN News", "https://news.un.org/feed/subscribe/en/news/all/rss.xml"},
-	{"Times of Israel", "https://www.timesofisrael.com/feed/"},
+	{"Ynetnews", "https://www.ynetnews.com/Integration/StoryRss3089.xml"},
 	{"Kyiv Independent", "https://kyivindependent.com/news-archive/rss/"},
 	{"NYT World", "https://rss.nytimes.com/services/xml/rss/nyt/World.xml"},
 	{"BBC Middle East", "https://feeds.bbci.co.uk/news/world/middle_east/rss.xml"},
