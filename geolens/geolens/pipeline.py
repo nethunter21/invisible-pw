@@ -1,4 +1,14 @@
-"""Analysis pipeline: runs every technique, fuses the evidence, writes the reasoning."""
+"""GeoLens analysis pipeline.
+
+Stages
+  1. Image prep       EXIF · orientation · mirror detection (selfies) · person masking · scene crops
+  2. Text             multi-pass OCR (normal/mirrored, zoomed tiles) → linguistic + venue/brand clues
+  3. Vision           StreetCLIP country model on masked views · worldwide landmark & skyline match ·
+                      12 clue-probe families · city refinement
+  4. Online           Yandex on every scene crop + sign crops · Google Lens · TinEye · Nominatim · Wikipedia
+  5. Fusion           country posterior (log-linear) + spatial clustering of every location candidate
+  6. Explain          attention maps, sun geometry, reasoning text, full teaching log
+"""
 from __future__ import annotations
 
 import base64
@@ -6,6 +16,7 @@ import io
 import math
 import re
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 
@@ -14,221 +25,224 @@ from PIL import Image, ImageOps
 
 from . import exif as exif_mod
 from . import gazetteer as gz
+from . import landmarks as lm
 from . import ocr as ocr_mod
+from . import person as person_mod
 from . import reverse as rev
 from . import sun as sun_mod
 from .knowledge import PROBES
 from .log import AnalysisLog
 
 DEFAULT_SETTINGS = {"model": "streetclip", "online": True, "reverse_auto": True, "ocr": True,
-                    "attention": True, "geocode_ocr": True}
+                    "attention": True, "geocode_ocr": True, "lens_auto": True}
+
+OCR_TEACH = {
+    "phone": "Dialling prefixes are assigned per country by the ITU.",
+    "domain": "ccTLDs (.de, .br, .jp) are assigned per country; local businesses use them.",
+    "street-word": "The generic part of a street name is in the local language.",
+    "script": "Writing systems are tied to languages and countries.",
+    "currency": "Prices reveal the local currency.",
+    "diacritic": "Accented letters are orthography-specific.",
+    "place-name": "A readable toponym is a strong clue — check it is a location sign, not a brand named after a city.",
+    "word": "Everyday shop/street vocabulary reveals the language.",
+    "landmark": lm.TEACH,
+}
 
 
-def _thumb_b64(img: Image.Image, side: int = 1400) -> str:
+def _b64(img: Image.Image, side: int = 1400, q: int = 86) -> str:
     im = img.copy()
     im.thumbnail((side, side))
     buf = io.BytesIO()
-    im.convert("RGB").save(buf, "JPEG", quality=88)
+    im.convert("RGB").save(buf, "JPEG", quality=q)
     return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
 def _image_stats(img: Image.Image) -> dict:
     a = np.asarray(img.convert("RGB").resize((256, 256))).astype(np.float32)
     lum = (0.299 * a[..., 0] + 0.587 * a[..., 1] + 0.114 * a[..., 2])
-    sky = a[:85]
     return {"brightness": round(float(lum.mean()), 1), "contrast": round(float(lum.std()), 1),
-            "sky_blue": round(float((sky[..., 2] - sky[..., 0]).mean()), 1),
+            "night": bool(lum.mean() < 70 and np.percentile(lum, 98) > 150),
             "green_ratio": round(float(((a[..., 1] > a[..., 0] + 10) & (a[..., 1] > a[..., 2])).mean()), 3)}
+
+
+def _alpha_ratio(t: str) -> float:
+    s = t.replace(" ", "")
+    return sum(ch.isalpha() for ch in s) / max(1, len(s))
 
 
 class Analyzer:
     def __init__(self, engine, settings: dict | None = None):
         self.engine = engine
+        self.search_image = None
         self.settings = dict(DEFAULT_SETTINGS, **(settings or {}))
 
+    # ======================================================================= run
     def run(self, data: bytes, filename: str, log: AnalysisLog) -> dict[str, Any]:
         S = self.settings
         out: dict[str, Any] = {"filename": filename, "started": datetime.now(timezone.utc).isoformat()}
-        evidence: list[dict] = []  # {source, label, countries, weight, explain}
+        evidence: list[dict] = []
+        cands: list[dict] = []  # location candidates {lat, lon, w, prec, label, source, cc}
 
-        # ---------------------------------------------------------------- load
-        log.set_stage("Reading image", 0.03)
-        img = Image.open(io.BytesIO(data))
-        meta = exif_mod.read_metadata(img)
-        img = ImageOps.exif_transpose(img).convert("RGB")
+        # ------------------------------------------------------------ 1. load + metadata
+        log.set_stage("Reading image", 0.02)
+        raw = Image.open(io.BytesIO(data))
+        meta = exif_mod.read_metadata(raw)
+        img = ImageOps.exif_transpose(raw).convert("RGB")
+        original = img
+        out["stats"] = _image_stats(img)
+        log.add("input", f"Loaded {filename} ({img.size[0]}×{img.size[1]}, {len(data)//1024} KB)",
+                method="Pillow decode + EXIF orientation", data=out["stats"],
+                detail="Night scene detected — night-specific prompts will be used." if out["stats"]["night"] else "",
+                teach="Large photos are downscaled for the neural models; OCR runs on a high-resolution copy and on "
+                      "zoomed tiles so small rooftop signs stay readable.")
+        out["meta"] = meta
+        self._log_meta(meta, log, cands, evidence)
+
+        # ------------------------------------------------------------ 2. OCR + mirror detection
+        prep: dict[str, Any] = {"mirrored": False}
+        ocr_items: list[dict] = []
+        ocr_img = img.copy()
+        ocr_img.thumbnail((2200, 2200))
+        if S["ocr"]:
+            log.set_stage("Reading text — normal, mirrored and zoomed tiles", 0.06)
+            with log.timer("ocr", "Multi-pass OCR", method="RapidOCR PP-OCRv4 ×(2 orientations × (full + 6 zoomed tiles))",
+                           teach=ocr_mod.TEACH + " Front-camera selfies are mirror images, so text is also read "
+                                 "flipped; whichever orientation yields real words wins.") as t:
+                ocr_items, info = ocr_mod.run_ocr_multi(ocr_img)
+                prep.update(info)
+                t.detail = f"{len(ocr_items)} text regions · quality normal {info['quality_normal']} vs mirrored {info['quality_mirrored']}: " \
+                           + " | ".join(i["text"] for i in ocr_items[:15])
+                t.data = ocr_items[:60]
+        if prep.get("mirrored"):
+            img = ImageOps.mirror(img)
+            log.add("prep", "Mirrored image detected (front-camera selfie) — un-mirrored for all further analysis",
+                    method="OCR readability comparison, normal vs. horizontally flipped", level="success",
+                    detail=f"Readable-text score {prep['quality_normal']} → {prep['quality_mirrored']} when flipped.",
+                    teach="Selfie cameras save a mirror image. Mirrored text breaks OCR and reverse image search, "
+                          "and it flips driving side and shadow directions. Always un-mirror before analysing.")
         work = img.copy()
         work.thumbnail((1280, 1280))
+        sx = work.size[0] / ocr_img.size[0]
+        for it in ocr_items:
+            it["box"] = [int(v * sx) for v in it["box"]]
         out["image"] = {"w": img.size[0], "h": img.size[1], "work_w": work.size[0], "work_h": work.size[1],
-                        "bytes": len(data), "src": _thumb_b64(work)}
-        out["stats"] = _image_stats(work)
-        log.add("input", f"Loaded {filename} ({img.size[0]}×{img.size[1]}, {len(data)//1024} KB)",
-                method="Pillow decode + EXIF orientation fix", detail=f"Working copy {work.size[0]}×{work.size[1]}",
-                data=out["stats"],
-                teach="Large photos are downscaled for the neural models, but the full-resolution original is kept "
-                      "for OCR so small text stays readable.")
+                        "bytes": len(data), "src": _b64(work)}
 
-        # ---------------------------------------------------------------- metadata
-        log.set_stage("Reading metadata", 0.06)
-        out["meta"] = meta
-        if meta["gps"]:
-            g = meta["gps"]
-            nc = gz.nearest_city(g["lat"], g["lon"])
-            log.add("metadata", f"GPS coordinates embedded in EXIF: {g['lat']:.5f}, {g['lon']:.5f}",
-                    method="EXIF GPS IFD parsing", level="success",
-                    detail=f"Nearest known city: {nc['name']} ({nc['cc']}), {nc['dist_km']} km" if nc else "",
-                    data=g, teach="Phones write GPS coordinates into the photo unless the app strips them (most social "
-                                  "networks do). Always check metadata first — it can solve the case instantly, but it "
-                                  "can also be edited, so cross-check it against visual clues.")
-        else:
-            log.add("metadata", "No GPS in metadata" + (" (EXIF present)" if meta["has_exif"] else " (no EXIF — likely stripped by a platform or screenshot)"),
-                    method="EXIF GPS IFD parsing", level="muted",
-                    data={k: meta["raw"].get(k) for k in ("Make", "Model", "Software", "DateTimeOriginal") if meta["raw"].get(k)},
-                    teach="Missing EXIF is normal for images downloaded from social media; the camera model, software "
-                          "and timestamp, if present, are still useful (time → sun position).")
-        if meta.get("datetime"):
-            log.add("metadata", f"Capture time: {meta['datetime']['local']}" + (f" (UTC {meta['datetime']['utc']})" if meta['datetime'].get('utc') else " (time zone unknown)"),
-                    method="EXIF DateTimeOriginal / OffsetTime", data=meta["datetime"],
-                    teach="The capture time feeds the sun-position checks below. Without a time-zone offset the "
-                          "clock time is local time at the (unknown) place.")
+        # ------------------------------------------------------------ 3. people
+        log.set_stage("Detecting people", 0.14)
+        persons = {"faces": [], "persons": [], "area": 0.0}
+        with log.timer("prep", "Person / face detection", method="OpenCV Haar cascades (frontal + profile)",
+                       teach=person_mod.TEACH) as t:
+            persons = person_mod.detect(work)
+            t.detail = (f"{len(persons['faces'])} face(s); person covers {persons['area']*100:.0f}% of the frame — "
+                        "masked out of the scene" if persons["faces"] else "No prominent person — whole image is scene")
+            t.data = persons
+        masked = person_mod.masked(work, persons["persons"])
+        self.search_image = masked  # used by the manual "open in engine" buttons
+        bg_boxes = person_mod.background_boxes(work.size, persons["persons"])
+        prep.update(persons=persons["persons"], faces=persons["faces"], person_area=persons["area"],
+                    crops=[{"name": n, "box": b} for n, b in bg_boxes])
+        if persons["faces"]:
+            prep["masked_src"] = _b64(masked, 1000, 80)
+        out["prep"] = prep
 
-        # ---------------------------------------------------------------- vision
-        vis = None
+        # ------------------------------------------------------------ 4. vision
+        vis, world = None, []
         all_isos = sorted(gz.countries())
-        log.set_stage("Loading vision model", 0.1)
         if self.engine is not None:
+            log.set_stage("Loading vision model", 0.18)
             if not self.engine.ready:
                 log.add("vision", "Loading vision model (first run downloads it once, no account needed)",
                         method=self.engine.model_key, level="muted")
-            ok = self.engine.load()
-            if not ok:
+            if not self.engine.load():
                 log.add("vision", "Vision model unavailable — continuing with OCR, metadata and reverse search",
                         detail=self.engine.error or "", level="warn")
         if self.engine is not None and self.engine.ready:
-            log.set_stage("Visual geolocation", 0.2)
-            with log.timer("vision", "Vision analysis complete", method="StreetCLIP pipeline") as t:
-                vis = self.engine.analyze(work, log)
+            log.set_stage("Visual geolocation", 0.24)
+            with log.timer("vision", "Vision analysis complete", method="StreetCLIP on person-masked image + scene crops"):
+                vis = self.engine.analyze(masked, log, extra_views=bg_boxes)
             if vis:
                 all_isos = self.engine.country_isos
+                log.set_stage("Matching landmarks & skylines worldwide", 0.36)
+                with log.timer("vision", "World landmark pass finished", method="CLIP zero-shot"):
+                    world = self.engine.world_places(vis["img_e"], log, night=out["stats"]["night"])
+                for w_ in world[:10]:
+                    if w_["p"] < 0.03:
+                        continue
+                    lmk = w_["type"] == "landmark"
+                    cands.append({"lat": w_["lat"], "lon": w_["lon"], "w": (7 if lmk else 5) * w_["p"],
+                                  "prec": 1.5 if lmk else 15, "cc": w_["cc"], "source": "Vision · world match", "city": w_["city"],
+                                  "label": f"{w_['name']} ({w_['p']*100:.0f}%)"})
+                cc_p = Counter()
+                for w_ in world:
+                    cc_p[w_["cc"]] += w_["p"]
+                for cc, p in cc_p.most_common(3):
+                    if p > 0.08:
+                        evidence.append({"source": "Vision · landmarks/skylines", "label": f"Looks like {gz.country_name(cc)} places ({p*100:.0f}%)",
+                                         "countries": [cc], "weight": 2.6 * p,
+                                         "explain": "Direct similarity to named places/skylines in that country."})
+        out["world"] = [{k: w_[k] for k in ("type", "name", "city", "cc", "lat", "lon", "p")} for w_ in world]
 
-        # ---------------------------------------------------------------- OCR
-        ocr_items, ocr_clues = [], []
-        if S["ocr"]:
-            log.set_stage("Reading text (OCR)", 0.45)
-            ocr_img = img.copy()
-            ocr_img.thumbnail((2200, 2200))
-            with log.timer("ocr", "Text recognition", method="RapidOCR (PP-OCRv4 detector + recogniser, ONNX)",
-                           teach=ocr_mod.TEACH) as t:
-                ocr_items = ocr_mod.run_ocr(ocr_img)
-                sx = work.size[0] / ocr_img.size[0]
-                for it in ocr_items:
-                    it["box"] = [int(v * sx) for v in it["box"]]
-                t.detail = f"{len(ocr_items)} text regions: " + " | ".join(i["text"] for i in ocr_items[:15])
-                t.data = ocr_items[:60]
-            ocr_clues = ocr_mod.extract_clues(ocr_items, all_isos)
-            for c in ocr_clues:
-                log.add("ocr", f"Text clue [{c['kind']}]: {c['text']}", method="Rule-based linguistic analysis",
-                        detail=c["explain"], data={"countries": c["countries"][:30]}, level="success",
-                        teach={"phone": "Dialling prefixes are assigned per country by the ITU.",
-                               "domain": "ccTLDs (.de, .br, .jp) are assigned per country; local businesses use them.",
-                               "street-word": "The generic part of a street name is in the local language.",
-                               "script": "Writing systems are tied to languages and countries.",
-                               "currency": "Prices reveal the local currency.",
-                               "diacritic": "Accented letters are orthography-specific.",
-                               "place-name": "A readable toponym is the strongest text clue — check that it is a "
-                                             "location sign and not, e.g., a brand named after a city.",
-                               "word": "Everyday shop/street vocabulary reveals the language."}.get(c["kind"], ""))
-                evidence.append({"source": "Text (OCR)", "label": f"{c['kind']}: {c['text']}", "countries": c["countries"],
-                                 "weight": c["weight"], "explain": c["explain"], "place": c.get("place")})
+        # ------------------------------------------------------------ 5. text clues
+        ocr_clues = ocr_mod.extract_clues(ocr_items, all_isos) if ocr_items else []
+        for c in ocr_clues:
+            log.add("ocr", f"Text clue [{c['kind']}]: {c['text']}", method="Rule-based linguistic / venue matching",
+                    detail=c["explain"], data={"countries": c["countries"][:30]}, level="success",
+                    teach=OCR_TEACH.get(c["kind"], ""))
+            evidence.append({"source": "Text (OCR)", "label": f"{c['kind']}: {c['text']}", "countries": c["countries"],
+                             "weight": c["weight"], "explain": c["explain"]})
+            if c.get("sites"):
+                for s_ in c["sites"]:
+                    q = s_["quality"]
+                    cands.append({"lat": s_["lat"], "lon": s_["lon"], "w": (9 if len(c["sites"]) == 1 else 5) * q,
+                                  "prec": 0.4, "cc": s_["cc"], "source": "Sign text · venue", "city": s_["city"],
+                                  "label": f"{s_['name']} ({s_['city']})"})
+            elif c.get("place"):
+                p = c["place"]
+                cands.append({"lat": p["lat"], "lon": p["lon"], "w": 2.0 if p["type"] == "city" else 0.6,
+                              "prec": 12 if p["type"] == "city" else 400, "cc": p["cc"],
+                              "source": "Sign text · place name", "label": p["name"]})
         out["ocr"] = {"items": ocr_items, "clues": ocr_clues}
 
-        # ---------------------------------------------------------------- geocode OCR lines online
+        # ------------------------------------------------------------ 6. online: reverse search + geocoding
+        reverse_out: dict[str, Any] = {"runs": [], "manual": rev.MANUAL, "places": [], "landmarks": [], "phrases": []}
         geocoded: list[dict] = []
-        if S["online"] and S["geocode_ocr"] and ocr_items:
-            lines = [i["text"] for i in ocr_items if len(i["text"]) >= 5 and re.search(r"[A-Za-zÀ-ž]{4,}", i["text"])
-                     and sum(ch.isalpha() for ch in i["text"]) >= 0.6 * len(i["text"].replace(" ", ""))]
-            street_lines = [l for l in lines if any(w in ocr_mod._strip(l) for w in ("str", "rua", "rue", "calle", "via ", "road", "street", "avenue", "avenida", "jalan", "ulica", "platz", "plaza", "piazza", "straat", "gatan", "vej", "katu", "sokak", "cadde"))]
-            for q in (street_lines + [l for l in lines if l not in street_lines])[:3]:
-                with log.timer("geocode", f"Geocoded OCR text '{q}'", method="OpenStreetMap Nominatim (free, no key)",
-                               teach="Free-text geocoding asks OpenStreetMap where a name exists. Ambiguous names "
-                                     "return many places, so results are only trusted when they agree with the "
-                                     "country evidence.") as t:
-                    hits = rev.nominatim(q)
-                    t.detail = "; ".join(f"{h['name'][:80]} ({h['lat']:.3f},{h['lon']:.3f})" for h in hits) or "no match"
-                    for h in hits[:2]:
-                        h["query"] = q
-                        geocoded.append(h)
+        if S["online"]:
+            log.set_stage("Reverse image search (Yandex ×N, Lens, TinEye) + geocoding", 0.45)
+            geo_queries = self._geo_queries(ocr_items, ocr_clues) if S["geocode_ocr"] else []
+            with ThreadPoolExecutor(max_workers=2) as ex:
+                f_rev = ex.submit(self._reverse, original, masked, work, bg_boxes, ocr_items, persons, log) if S["reverse_auto"] else None
+                f_geo = ex.submit(self._geocode, geo_queries, log) if geo_queries else None
+                if f_rev:
+                    reverse_out = f_rev.result() or reverse_out
+                if f_geo:
+                    geocoded = f_geo.result() or []
+            # phrases recurring across reverse hits → geocode the best two
+            extra_q = [p for p, n in reverse_out.get("phrases", [])
+                       if not lm.match_text(p) and not gz.find_places(p)][:2]
+            if extra_q and S["geocode_ocr"]:
+                geocoded += self._geocode(extra_q, log, source="Reverse-search phrase")
+            self._reverse_evidence(reverse_out, evidence, cands, log)
+            for g in geocoded:
+                cands.append({"lat": g["lat"], "lon": g["lon"], "w": g.get("w", 2.2), "prec": 1.0, "cc": g.get("cc", ""),
+                              "source": g["source"], "label": f"{g['query']} → {g['name'][:60]}"})
+        else:
+            log.add("online", "Online techniques disabled in settings", level="muted")
+        reverse_out["manual"] = rev.MANUAL
+        out["reverse"] = reverse_out
         out["geocoded"] = geocoded
 
-        # ---------------------------------------------------------------- reverse image search
-        reverse_out: dict[str, Any] = {"engines": {}, "manual": rev.MANUAL, "places": []}
-        if S["online"] and S["reverse_auto"]:
-            log.set_stage("Reverse image search (Yandex)", 0.6)
-            with log.timer("reverse", "Yandex reverse image search", method="Yandex CBIR upload + result parsing (no key)",
-                           teach=rev.TEACH) as t:
-                y = rev.yandex(work)
-                reverse_out["engines"]["yandex"] = y
-                t.detail = f"{len(y['results'])} matching pages, {len(y['tags'])} tags" + (" — captcha shown, open manually" if y.get("captcha") else "")
-                t.data = {"url": y["url"], "tags": y["tags"], "top": y["results"][:8]}
-            y = reverse_out["engines"].get("yandex")
-            if y:
-                txt = " ".join(r["title"] + " " + r.get("snippet", "") for r in y["results"]) + " " + " ".join(y["tags"])
-                places = gz.find_places(txt, min_pop=20000)
-                reverse_out["places"] = places[:12]
-                if places:
-                    log.add("reverse", "Place names found in Yandex matches", method="Gazetteer matching on result titles/snippets",
-                            detail=", ".join(f"{p['name']} ({p['cc']}) ×{p['hits']}" for p in places[:8]), level="success",
-                            teach="When several unrelated pages that show similar images mention the same place, that "
-                                  "place is very likely correct — frequency across independent sources is the signal.")
-                    cc_hits = Counter()
-                    for p in places[:10]:
-                        cc_hits[p["cc"]] += p["hits"]
-                    total = sum(cc_hits.values())
-                    for cc, n in cc_hits.most_common(3):
-                        evidence.append({"source": "Reverse search", "label": f"{gz.country_name(cc)} mentioned {n}× in Yandex matches",
-                                         "countries": [cc], "weight": 2.2 * n / total, "explain": "Visually similar images on the web are captioned with this place."})
-            log.set_stage("Reverse image search (TinEye)", 0.68)
-            with log.timer("reverse", "TinEye exact-copy search", method="TinEye upload (no key)") as t:
-                te = rev.tineye(work)
-                reverse_out["engines"]["tineye"] = te
-                t.detail = f"{te.get('total') or len(te['results'])} exact copies found"
-        out["reverse"] = reverse_out
+        # ------------------------------------------------------------ 7. fusion
+        log.set_stage("Fusing evidence", 0.8)
+        out.update(self._fuse(vis, evidence, cands, meta, all_isos, log))
 
-        # ---------------------------------------------------------------- fusion
-        log.set_stage("Fusing evidence", 0.75)
-        out.update(self._fuse(vis, evidence, meta, geocoded, reverse_out, all_isos, log))
-
-        # ---------------------------------------------------------------- attention maps
+        # ------------------------------------------------------------ 8. attention
         if vis and S["attention"]:
-            log.set_stage("Computing attention maps", 0.85)
-            maps = []
-            top_iso = out["countries"][0]["iso"]
-            from .vision import MODELS
-            q = MODELS[self.engine.model_key]["prompt"].format(gz.country_name(top_iso))
-            with log.timer("attention", f"Attention map for '{gz.country_name(top_iso)}'",
-                           method="Grad-CAM for Vision Transformers (gradient × activation, last block)",
-                           teach="The gradient of the image–text similarity with respect to each image patch shows "
-                                 "which patches pushed the model towards the answer. Bright areas are what the "
-                                 "model 'looked at'. Use it to verify the model relied on real clues (buildings, "
-                                 "signs, vegetation) and not on artefacts like watermarks.") as t:
-                m = self.engine.saliency(work, q)
-                if m:
-                    maps.append({"label": f"Country: {gz.country_name(top_iso)}", **m})
-                    t.detail = "Most attended regions: " + ", ".join(f"{r['region']} {r['share']*100:.0f}%" for r in m["regions"][:3])
-                    t.data = m["regions"]
-            for p in vis["probes"]:
-                if p["detected"] and p["id"] in ("architecture", "script", "vegetation") and p["countries"]:
-                    opt_prompt = next(o["prompt"] for g in PROBES if g["id"] == p["id"]
-                                      for o in g["options"] if o["label"] == p["label"])
-                    with log.timer("attention", f"Attention map for clue '{p['label']}'",
-                                   method="Grad-CAM for Vision Transformers") as t:
-                        m = self.engine.saliency(work, opt_prompt)
-                        if m:
-                            maps.append({"label": f"{p['title']}: {p['label']}", **m})
-                            t.detail = "Most attended regions: " + ", ".join(f"{r['region']} {r['share']*100:.0f}%" for r in m["regions"][:3])
-            out["attention"] = maps
+            log.set_stage("Computing attention maps", 0.88)
+            out["attention"] = self._attention(masked, vis, out, world, log)
 
-        # ---------------------------------------------------------------- sun
-        log.set_stage("Sun & shadow checks", 0.93)
+        # ------------------------------------------------------------ 9. sun
+        log.set_stage("Sun & shadow checks", 0.95)
         out["sun"] = self._sun(meta, out, log)
         out["vision"] = {"views": vis["views"], "probes": vis["probes"]} if vis else None
         out["model"] = None if self.engine is None else {"key": self.engine.model_key, "status": self.engine.status,
@@ -236,41 +250,210 @@ class Analyzer:
         log.set_stage("Done", 1.0)
         return out
 
-    # =================================================================== fusion
-    def _fuse(self, vis, evidence, meta, geocoded, reverse_out, all_isos, log) -> dict:
+    # ======================================================================= helpers
+    def _log_meta(self, meta, log, cands, evidence):
+        if meta["gps"]:
+            g = meta["gps"]
+            nc = gz.nearest_city(g["lat"], g["lon"])
+            cands.append({"lat": g["lat"], "lon": g["lon"], "w": 100, "prec": 0.05, "cc": nc["cc"] if nc else "",
+                          "source": "EXIF GPS", "label": f"{g['lat']:.5f}, {g['lon']:.5f}"})
+            if nc:
+                evidence.append({"source": "Metadata", "label": "EXIF GPS", "countries": [nc["cc"]], "weight": 8,
+                                 "explain": "GPS coordinates embedded by the camera."})
+            log.add("metadata", f"GPS coordinates embedded in EXIF: {g['lat']:.5f}, {g['lon']:.5f}",
+                    method="EXIF GPS IFD parsing", level="success",
+                    detail=f"Nearest known city: {nc['name']} ({nc['cc']}), {nc['dist_km']} km" if nc else "", data=g,
+                    teach="Phones write GPS into photos unless the app strips it (most social networks do). It can "
+                          "solve a case instantly — but it can be edited, so cross-check with visual clues.")
+        else:
+            log.add("metadata", "No GPS in metadata" + (" (EXIF present)" if meta["has_exif"] else " (no EXIF — stripped by a platform or a screenshot)"),
+                    method="EXIF GPS IFD parsing", level="muted",
+                    data={k: meta["raw"].get(k) for k in ("Make", "Model", "Software", "DateTimeOriginal") if meta["raw"].get(k)},
+                    teach="Missing EXIF is normal for social-media images; camera, software and timestamp still help.")
+        if meta.get("datetime"):
+            log.add("metadata", f"Capture time: {meta['datetime']['local']}" + (f" (UTC {meta['datetime']['utc']})" if meta['datetime'].get('utc') else " (time zone unknown)"),
+                    method="EXIF DateTimeOriginal / OffsetTime", data=meta["datetime"],
+                    teach="The capture time feeds the sun-position checks.")
+
+    def _geo_queries(self, ocr_items, ocr_clues) -> list[str]:
+        qs: list[str] = []
+        for c in ocr_clues:
+            if c["kind"] == "landmark" and c.get("sites") and len(c["sites"]) > 1:
+                qs.append(c["text"])  # multi-site brand: let OSM list every site, clustering picks one
+        for it in sorted(ocr_items, key=lambda i: -i["score"] * len(i["text"])):
+            t = re.sub(r"\s+", " ", it["text"]).strip()
+            if len(t) >= 6 and _alpha_ratio(t) >= 0.7 and t not in qs:
+                qs.append(t)
+        return qs[:4]
+
+    def _geocode(self, queries: list[str], log, source: str = "Sign text · geocoded") -> list[dict]:
+        out = []
+        for q in queries:
+            with log.timer("geocode", f"Geocoded '{q}'", method="OpenStreetMap Nominatim + Wikipedia geosearch (no key)",
+                           teach="Free-text geocoding asks OpenStreetMap and Wikipedia where a name exists. Ambiguous "
+                                 "names return many places; spatial clustering keeps only the ones that agree with "
+                                 "the rest of the evidence.") as t:
+                hits = []
+                try:
+                    for h in rev.nominatim(q)[:5]:
+                        hits.append(dict(h, query=q, source=source + " (OSM)", w=2.2))
+                except Exception as e:
+                    t.detail = f"Nominatim: {e}. "
+                try:
+                    for h in rev.wikipedia_geo(q)[:3]:
+                        nc = gz.nearest_city(h["lat"], h["lon"])
+                        hits.append(dict(h, query=q, cc=nc["cc"] if nc else "", source=source + " (Wikipedia)", w=1.8))
+                except Exception as e:
+                    t.detail += f"Wikipedia: {e}."
+                t.detail = (t.detail or "") + ("; ".join(f"{h['name'][:70]} ({h['lat']:.3f},{h['lon']:.3f})" for h in hits) or "no match")
+                out += hits
+        return out
+
+    def _reverse(self, original, masked, work, bg_boxes, ocr_items, persons, log) -> dict:
+        S = self.settings
+        queries: list[tuple[str, Image.Image]] = []
+        if persons["faces"]:
+            queries.append(("Person-masked image", masked))
+            for n, b in sorted(bg_boxes, key=lambda nb: -(nb[1][2] - nb[1][0]) * (nb[1][3] - nb[1][1]))[:4]:
+                queries.append((n, masked.crop(tuple(b))))
+        else:
+            queries.append(("Full image", work))
+            w, h = work.size
+            queries.append(("Upper half", work.crop((0, 0, w, h // 2))))
+            queries.append(("Centre", work.crop((w // 6, h // 6, w * 5 // 6, h * 5 // 6))))
+        # crops around readable signs (zoomed) — this is what a human does by hand
+        signs = sorted([i for i in ocr_items if len(i["text"]) >= 4], key=lambda i: -i["score"] * len(i["text"]))[:2]
+        for it in signs:
+            x0, y0, x1, y1 = it["box"]
+            bw, bh = x1 - x0, y1 - y0
+            pad_x, pad_y = max(bw * 1.2, 120), max(bh * 4, 120)
+            box = (int(max(0, x0 - pad_x)), int(max(0, y0 - pad_y)), int(min(work.size[0], x1 + pad_x)), int(min(work.size[1], y1 + pad_y * 1.5)))
+            crop = masked.crop(box)
+            if max(crop.size) < 700:
+                f = 700 / max(crop.size)
+                crop = crop.resize((int(crop.size[0] * f), int(crop.size[1] * f)), Image.LANCZOS)
+            queries.append((f"Sign '{it['text'][:24]}'", crop))
+        log.add("reverse", f"Reverse search plan: {len(queries)} image variants on Yandex"
+                + (" + Google Lens" if S.get("lens_auto") else "") + " + TinEye (original)",
+                method="Automatic multi-crop reverse image search",
+                detail=", ".join(q[0] for q in queries), teach=rev.TEACH + " Searching background-only crops and "
+                "zoomed sign crops separately is exactly the manual trick analysts use — GeoLens does it for every image.")
+
+        def done(r):
+            n = len(r.get("results", []))
+            log.add("reverse", f"{r.get('engine', '?')} · {r['query']}: " + (f"{n} matches" if not r.get("error") else "failed"),
+                    method="Key-less web upload + result parsing", detail=r.get("error") or ", ".join(x["title"][:60] for x in r.get("results", [])[:5]),
+                    data={"url": r.get("url"), "tags": r.get("tags", [])[:10]}, level="warn" if r.get("error") else "info",
+                    ms=r.get("secs", 0) * 1000)
+
+        runs = rev.multi_search(queries, engines=("yandex",), workers=3, on_done=done)
+        extra = []
+        if S.get("lens_auto"):
+            extra.append((queries[0][0], queries[0][1], "lens"))
+        extra.append(("Original upload", original, "tineye"))
+        for label, im, e in extra:
+            runs += rev.multi_search([(label, im)], engines=(e,), workers=1, on_done=done)
+        return {"runs": runs}
+
+    def _reverse_evidence(self, R, evidence, cands, log):
+        runs = R.get("runs", [])
+        titles = []
+        for r in runs:
+            for x in r.get("results", []):
+                titles.append((x.get("title", "") + " " + x.get("snippet", "")).strip())
+            titles += r.get("tags", [])
+        if not titles:
+            return
+        # venues / landmarks named in titles
+        lm_cnt: Counter = Counter()
+        lm_obj: dict[str, list[dict]] = {}
+        for t in titles:
+            for m in lm.match_text(t, min_ratio=0.9):
+                lm_cnt[m["name"]] += 1
+                lm_obj.setdefault(m["name"], [])
+                if m not in lm_obj[m["name"]]:
+                    lm_obj[m["name"]].append(m)
+        places = gz.find_places(" . ".join(titles), min_pop=20000)
+        phrases = rev.frequent_phrases(titles)
+        R["landmarks"] = [{"name": n, "count": c, "sites": [{k: s[k] for k in ("city", "cc", "lat", "lon")} for s in lm_obj[n]]}
+                          for n, c in lm_cnt.most_common(10)]
+        R["places"] = [{k: p[k] for k in ("name", "cc", "lat", "lon", "hits", "type")} for p in places[:12]]
+        R["phrases"] = phrases
+        log.add("reverse", f"Aggregated {len(titles)} result titles from {len(runs)} searches",
+                method="Venue fuzzy-matching + gazetteer + recurring-phrase mining", level="success" if lm_cnt or places else "info",
+                detail=("Venues: " + ", ".join(f"{n} ×{c}" for n, c in lm_cnt.most_common(5)) + ". " if lm_cnt else "")
+                       + ("Places: " + ", ".join(f"{p['name']} ({p['cc']}) ×{p['hits']}" for p in places[:6]) + ". " if places else "")
+                       + ("Phrases: " + ", ".join(f"“{p}” ×{n}" for p, n in phrases[:6]) if phrases else ""),
+                teach="When several independent pages showing similar images name the same venue or place, that is "
+                      "close to proof. Frequency across sources is the signal; a single mention is weak.")
+        for n, c in lm_cnt.most_common(5):
+            sites = lm_obj[n]
+            evidence.append({"source": "Reverse search", "label": f"'{n}' named {c}× in matches", "countries": sorted({s['cc'] for s in sites}),
+                             "weight": min(4.0, 1.3 * c), "explain": "Pages with visually similar images name this venue."})
+            for s in sites:
+                cands.append({"lat": s["lat"], "lon": s["lon"], "w": min(14, 3.2 * c) / len(sites), "prec": 0.5, "cc": s["cc"], "city": s["city"],
+                              "source": "Reverse search · venue", "label": f"{n} ×{c}"})
+        tot = sum(p["hits"] for p in places[:10]) or 1
+        cc_hits: Counter = Counter()
+        for p in places[:10]:
+            cc_hits[p["cc"]] += p["hits"]
+            if p["type"] == "city":
+                cands.append({"lat": p["lat"], "lon": p["lon"], "w": min(8, 1.6 * p["hits"]), "prec": 12, "cc": p["cc"],
+                              "source": "Reverse search · place", "label": f"{p['name']} ×{p['hits']}"})
+        for cc, n in cc_hits.most_common(3):
+            evidence.append({"source": "Reverse search", "label": f"{gz.country_name(cc)} named {n}× in matches", "countries": [cc],
+                             "weight": 2.4 * n / tot, "explain": "Visually similar images on the web are captioned with this place."})
+
+    # ======================================================================= fusion
+    def _fuse(self, vis, evidence, cands, meta, all_isos, log) -> dict:
         isos = list(all_isos)
         idx = {iso: i for i, iso in enumerate(isos)}
-        if vis:
-            prior = np.array([vis["country_probs"].get(i, 1e-6) for i in isos])
-        else:
-            prior = np.ones(len(isos))
+        prior = np.array([vis["country_probs"].get(i, 1e-6) for i in isos]) if vis else np.ones(len(isos))
         prior = prior / prior.sum()
-        logp = np.log(prior + 1e-9)
-        contributions: dict[str, list] = {}
-
         if vis:
             for p in vis["probes"]:
                 if p["detected"] and p["countries"] and p["weight"] > 0:
-                    evidence.append({"source": "Visual clue", "label": f"{p['title']}: {p['label']}",
-                                     "countries": p["countries"], "weight": p["weight"] * p["prob"],
-                                     "explain": p["explain"] or p["teach"].split(". ")[0] + "."})
-        for e in evidence:
-            if not e["countries"]:
-                continue
-            boost = np.zeros(len(isos))
-            for c in e["countries"]:
-                if c in idx:
-                    boost[idx[c]] = e["weight"]
-            logp += boost
-        post = np.exp(logp - logp.max())
-        post /= post.sum()
+                    evidence.append({"source": "Visual clue", "label": f"{p['title']}: {p['label']}", "countries": p["countries"],
+                                     "weight": p["weight"] * p["prob"], "explain": p["explain"] or p["teach"].split(". ")[0] + "."})
 
-        if meta.get("gps"):  # hard evidence
-            g = meta["gps"]
-            nc = gz.nearest_city(g["lat"], g["lon"])
-            if nc and nc["cc"] in idx:
-                post = post * 0.02
-                post[idx[nc["cc"]]] += 0.98
+        def posterior(ev):
+            logp = np.log(prior + 1e-9) * (0.8 if vis else 1.0)
+            for e in ev:
+                for c in e["countries"]:
+                    if c in idx:
+                        logp[idx[c]] += e["weight"]
+            post = np.exp(logp - logp.max())
+            return post / post.sum()
+
+        post = posterior(evidence)
+        # --- spatial clustering of location candidates
+        country_lookup = {iso: float(post[idx[iso]]) for iso in isos}
+        for c in cands:  # country posterior acts as a soft prior on candidates
+            c["w_eff"] = c["w"] * (0.35 + 0.65 * math.sqrt(country_lookup.get(c["cc"], 0.02)))
+        clusters = []
+        for c in sorted(cands, key=lambda c: -c["w_eff"]):
+            for cl in clusters:
+                if gz.haversine_km(cl["lat"], cl["lon"], c["lat"], c["lon"]) <= 35:
+                    cl["members"].append(c)
+                    cl["score"] += c["w_eff"]
+                    break
+            else:
+                clusters.append({"lat": c["lat"], "lon": c["lon"], "members": [c], "score": c["w_eff"]})
+        for cl in clusters:  # bonus for independent sources agreeing
+            srcs = {m["source"].split(" · ")[0] for m in cl["members"]}
+            cl["sources"] = sorted(srcs)
+            cl["score"] *= 1 + 0.35 * (len(srcs) - 1)
+        clusters.sort(key=lambda c: -c["score"])
+        total = sum(c["score"] for c in clusters) or 1
+        best = clusters[0] if clusters else None
+        if best:  # the winning area feeds back into the country decision
+            cc_best = Counter(m["cc"] for m in best["members"] if m["cc"]).most_common(1)
+            if cc_best:
+                share = best["score"] / total
+                evidence.append({"source": "Spatial agreement", "label": f"{len(best['members'])} location clue(s) agree ({', '.join(best['sources'])})",
+                                 "countries": [cc_best[0][0]], "weight": min(5.0, 1.2 * len(best["sources"]) + 3 * share),
+                                 "explain": "Independent techniques point to the same small area."})
+                post = posterior(evidence)
         order = np.argsort(-post)
         countries = []
         for j in order[:8]:
@@ -278,119 +461,124 @@ class Analyzer:
             sup = [e["label"] for e in evidence if iso in e["countries"]]
             countries.append({"iso": iso, "name": gz.country_name(iso), "prob": float(post[j]),
                               "visual": float(prior[j]) if vis else None, "support": sup[:8]})
-        log.add("fusion", "Evidence fusion → " + ", ".join(f"{c['name']} {c['prob']*100:.1f}%" for c in countries[:4]),
-                method="Naïve-Bayes style log-linear fusion: log P = log P_visual + Σ weight·[country ∈ clue]",
+        log.add("fusion", "Country fusion → " + ", ".join(f"{c['name']} {c['prob']*100:.1f}%" for c in countries[:4]),
+                method="Log-linear fusion: log P = 0.8·log P_visual + Σ weight·[country ∈ clue]",
                 data=[{"source": e["source"], "label": e["label"], "weight": round(e["weight"], 2), "n_countries": len(e["countries"])} for e in evidence],
-                teach="Each independent clue multiplies the odds of the countries it supports. Strong, narrow clues "
-                      "(a phone prefix, a script used in one country) move the result a lot; broad clues (white "
-                      "road lines, 'temperate forest') only nudge it. This mirrors how human geolocators "
-                      "eliminate countries step by step.")
+                teach="Each independent clue multiplies the odds of the countries it supports. Narrow clues (a "
+                      "venue name, a phone prefix, a unique script) move the result a lot; broad ones only nudge it.")
 
-        # ---- location
-        top = [(c["iso"], c["prob"]) for c in countries[:3] if c["prob"] > 0.03] or [(countries[0]["iso"], countries[0]["prob"])]
-        extra = [e["place"] for e in evidence if e.get("place")] + reverse_out.get("places", [])
-        cities = []
-        if vis:
-            cities = self.engine.refine_cities(vis["img_e"], top, extra, log)
+        topc = countries[0]["iso"]
+        best = next((cl for cl in clusters if any(m["cc"] == topc for m in cl["members"])), best)
+        if best:
+            members = [m for m in best["members"]]
+            min_prec = min(m["prec"] for m in members)
+            tier = [m for m in members if m["prec"] <= max(min_prec * 3, 0.5)]
+            wsum = sum(m["w_eff"] for m in tier)
+            lat = sum(m["lat"] * m["w_eff"] for m in tier) / wsum
+            lon = sum(m["lon"] * m["w_eff"] for m in tier) / wsum
+            spread = max([gz.haversine_km(lat, lon, m["lat"], m["lon"]) for m in tier] + [0])
+            radius = max(min_prec, spread * 1.2, 0.3)
+            share = best["score"] / total
+            precise = min_prec <= 2
+            conf = 0.45 * countries[0]["prob"] + 0.35 * share + (0.2 if precise and len(best["sources"]) >= 2 else 0.1 if precise else 0)
+            if meta.get("gps"):
+                conf = 0.99
+            lead = max(members, key=lambda m: m["w_eff"])
+            loc = {"lat": round(lat, 5), "lon": round(lon, 5), "radius_km": round(radius, 2),
+                   "source": lead["source"], "method": f"Cluster of {len(members)} clues from {', '.join(best['sources'])}; "
+                                                        f"pin = weighted centre of the most precise ones ({lead['label']})"}
         else:
-            for iso, p in top:
-                for c in gz.cities_of(iso, 3):
-                    cities.append(dict(c, score=p / 3))
-        loc = None
-        method = ""
-        if meta.get("gps"):
-            g = meta["gps"]
-            loc = {"lat": g["lat"], "lon": g["lon"], "radius_km": 0.05, "source": "EXIF GPS"}
-            method = "Embedded GPS coordinates"
-        else:
-            # text place names / geocodes that agree with the top country are strongest
-            topc = countries[0]["iso"]
-            text_places = [e["place"] for e in evidence if e.get("place") and e["place"]["type"] == "city" and e["place"]["cc"] == topc]
-            geo_ok = [g for g in geocoded if g["cc"] == topc]
-            rev_ok = [p for p in reverse_out.get("places", []) if p["type"] == "city" and p["cc"] == topc and p["hits"] >= 2]
-            if geo_ok:
-                g = geo_ok[0]
-                loc = {"lat": g["lat"], "lon": g["lon"], "radius_km": 5, "source": f"Geocoded sign text '{g['query']}'"}
-                method = "OCR text geocoded with OpenStreetMap, consistent with country evidence"
-            elif rev_ok:
-                p = rev_ok[0]
-                loc = {"lat": p["lat"], "lon": p["lon"], "radius_km": 25, "source": f"Reverse-search matches mention {p['name']}"}
-                method = "Place named repeatedly in reverse-image-search matches"
-            elif text_places:
-                p = text_places[0]
-                loc = {"lat": p["lat"], "lon": p["lon"], "radius_km": 30, "source": f"Place name '{p['name']}' read in the image"}
-                method = "Place name read by OCR"
-            elif cities:
-                cc = [c for c in cities if c["cc"] == topc][:3] or cities[:1]
-                w = np.array([c["score"] for c in cc])
-                w = w / w.sum()
-                lat = float(sum(c["lat"] * wi for c, wi in zip(cc, w)))
-                lon = float(sum(c["lon"] * wi for c, wi in zip(cc, w)))
-                spread = max([gz.haversine_km(lat, lon, c["lat"], c["lon"]) for c in cc] + [0])
-                if spread > 600:  # candidates disagree: pick the best one instead of averaging into nowhere
-                    lat, lon = cc[0]["lat"], cc[0]["lon"]
-                area = gz.countries()[topc]["area"] or 1e5
-                radius = min(max(60, math.sqrt(area) * 0.35 * (1.3 - countries[0]["prob"])), 1500)
-                loc = {"lat": round(lat, 4), "lon": round(lon, 4), "radius_km": round(radius), "source": "Visual similarity to cities"}
-                method = "Weighted centre of the most similar cities in the top country"
-            else:
-                c = gz.countries()[topc]
-                loc = {"lat": c["lat"], "lon": c["lon"], "radius_km": 800, "source": "Country centre"}
-                method = "Population-weighted centre of the most likely country"
+            c = gz.countries()[topc]
+            loc = {"lat": c["lat"], "lon": c["lon"], "radius_km": 800, "source": "Country centre",
+                   "method": "Population-weighted centre of the most likely country"}
+            conf = countries[0]["prob"] * 0.6
         nc = gz.nearest_city(loc["lat"], loc["lon"])
-        loc["nearest_city"] = nc
-        loc["country"] = countries[0]["name"]
-        loc["iso"] = countries[0]["iso"]
-        loc["method"] = method
-        conf = countries[0]["prob"]
-        if meta.get("gps"):
-            conf = 0.99
-        loc["confidence"] = round(float(conf), 3)
-        loc["confidence_label"] = ("Very high" if conf > 0.85 else "High" if conf > 0.6 else "Medium" if conf > 0.35 else "Low")
-        log.add("fusion", f"Final estimate: {nc['name'] if nc else ''}, {loc['country']} ({loc['lat']:.4f}, {loc['lon']:.4f}) ±{loc['radius_km']} km",
-                method=method, level="success", data=loc,
-                teach="The pin is placed with the most specific trustworthy evidence available, in this order: "
-                      "GPS metadata → geocoded sign text → places repeated across reverse-search hits → place names "
-                      "read in the image → visual similarity to cities. The circle is the uncertainty radius.")
-        reasoning = self._reasoning(loc, countries, evidence, vis, meta)
-        return {"location": loc, "countries": countries, "cities": [
-            {k: c[k] for k in ("name", "cc", "lat", "lon", "pop", "score") if k in c} for c in cities[:8]],
-            "evidence": [{k: v for k, v in e.items() if k != "place"} for e in evidence], "reasoning": reasoning}
+        venue = None
+        if best:
+            vm = [m for m in best["members"] if m["prec"] <= 1.5 and ("venue" in m["source"] or "world" in m["source"])]
+            if vm:
+                venue = max(vm, key=lambda m: m["w_eff"])["label"].split(" (")[0].split(" ×")[0]
+        city_name = None
+        if best:
+            named = [m for m in best["members"] if m.get("city")]
+            if named:
+                city_name = max(named, key=lambda m: m["w_eff"])["city"]
+        loc.update(nearest_city=nc, city=city_name or (nc["name"] if nc else ""), country=countries[0]["name"], iso=topc, venue=venue,
+                   confidence=round(float(min(0.99, conf)), 3))
+        c_ = loc["confidence"]
+        loc["confidence_label"] = "Very high" if c_ > 0.8 else "High" if c_ > 0.6 else "Medium" if c_ > 0.35 else "Low"
+        log.add("fusion", f"Final estimate: {(venue + ', ') if venue else ''}{loc['city']}, {loc['country']} "
+                          f"({loc['lat']:.4f}, {loc['lon']:.4f}) ±{loc['radius_km']} km",
+                method=loc["method"], level="success", data={k: v for k, v in loc.items() if k != "nearest_city"},
+                teach="Every technique proposes points on the map. Points within 35 km are clustered; clusters "
+                      "supported by several *independent* techniques (sign text + reverse search + vision) win. "
+                      "The pin is the weighted centre of the most precise clues in the winning cluster, and the "
+                      "circle reflects their precision and disagreement.")
+        cl_out = [{"lat": round(c["lat"], 4), "lon": round(c["lon"], 4), "score": round(c["score"] / total, 3),
+                   "sources": c["sources"], "members": [{k: m[k] for k in ("label", "source", "lat", "lon", "prec")} | {"w": round(m["w_eff"], 2)} for m in c["members"][:12]],
+                   "name": (gz.nearest_city(c["lat"], c["lon"]) or {}).get("name", "")} for c in clusters[:6]]
+        city_rows = []
+        if vis:
+            top = [(c["iso"], c["prob"]) for c in countries[:3] if c["prob"] > 0.03] or [(topc, 1.0)]
+            city_rows = self.engine.refine_cities(vis["img_e"], top, [], log)
+        reasoning = self._reasoning(loc, countries, evidence, vis, meta, cl_out)
+        return {"location": loc, "countries": countries, "clusters": cl_out,
+                "cities": [{k: c[k] for k in ("name", "cc", "lat", "lon", "pop", "score") if k in c} for c in city_rows[:8]],
+                "evidence": evidence, "reasoning": reasoning}
 
-    def _reasoning(self, loc, countries, evidence, vis, meta) -> list[str]:
+    def _reasoning(self, loc, countries, evidence, vis, meta, clusters) -> list[str]:
         out = []
         c0 = countries[0]
-        city = loc["nearest_city"]["name"] if loc.get("nearest_city") else ""
-        out.append(f"The image was most likely taken in {c0['name']}" + (f", near {city}" if city else "") +
-                   f" — {loc['confidence_label'].lower()} confidence ({c0['prob']*100:.0f}%).")
+        city = loc.get("city") or (loc["nearest_city"]["name"] if loc.get("nearest_city") else "")
+        where = ", ".join(x for x in (loc.get("venue"), city, c0["name"]) if x)
+        out.append(f"Most likely location: {where} — {loc['confidence_label'].lower()} confidence ({loc['confidence']*100:.0f}%).")
         if meta.get("gps"):
-            out.append("The photo carries GPS coordinates in its metadata, which settles the location (verify that "
-                       "visual clues agree, metadata can be forged).")
+            out.append("GPS coordinates are embedded in the file's metadata (verify against the visual clues — metadata can be forged).")
+        if clusters:
+            b = clusters[0]
+            n = len(b["members"])
+            out.append(f"{n} clue{'s' if n != 1 else ''} converge on this area ({', '.join(b['sources'])}): "
+                       + "; ".join(m["label"] for m in b["members"][:4]) + ".")
+        for e in sorted([e for e in evidence if e["source"] in ("Text (OCR)", "Reverse search")], key=lambda e: -e["weight"])[:4]:
+            out.append(f"{e['source']}: {e['explain']}")
         if vis:
-            scene = next((p for p in vis["probes"] if p["id"] == "scene"), None)
-            if scene and scene["detected"]:
-                out.append(f"Scene: {scene['label'].lower()}.")
-            strong = [p for p in vis["probes"] if p["detected"] and p["weight"] > 0 and p["countries"]]
-            strong.sort(key=lambda p: -p["weight"] * p["prob"])
-            for p in strong[:5]:
+            strong = sorted([p for p in vis["probes"] if p["detected"] and p["weight"] > 0 and p["countries"]],
+                            key=lambda p: -p["weight"] * p["prob"])
+            for p in strong[:4]:
                 inside = c0["iso"] in p["countries"]
                 out.append(f"{p['title']}: {p['label']}" + (f" — {p['explain']}" if p["explain"] else "") +
-                           (f" This is consistent with {c0['name']}." if inside else f" (Note: atypical for {c0['name']}.)"))
+                           ("" if inside else f" (atypical for {c0['name']})"))
             best_view = max(vis["views"], key=lambda v: v.get("share_of_top", 0))
-            out.append(f"The '{best_view['view']}' part of the picture contributed most to the country decision "
-                       f"({best_view['share_of_top']*100:.0f}% of the weight).")
-        txt = [e for e in evidence if e["source"] == "Text (OCR)"]
-        if txt:
-            out.append("Text in the image: " + "; ".join(e["explain"].rstrip(". ") for e in txt[:4]) + ".")
-        rv = [e for e in evidence if e["source"] == "Reverse search"]
-        if rv:
-            out.append("Reverse image search: " + "; ".join(e["label"] for e in rv))
-        if len(countries) > 1 and countries[1]["prob"] > 0.08:
-            out.append(f"Alternative: {countries[1]['name']} ({countries[1]['prob']*100:.0f}%)" +
-                       (f", then {countries[2]['name']} ({countries[2]['prob']*100:.0f}%)." if len(countries) > 2 else "."))
+            out.append(f"Region that carried the most visual signal: {best_view['view']} ({best_view['share_of_top']*100:.0f}%).")
+        if len(countries) > 1 and countries[1]["prob"] > 0.05:
+            out.append(f"Alternative: {countries[1]['name']} ({countries[1]['prob']*100:.0f}%).")
         return out
 
-    # =================================================================== sun
+    def _attention(self, masked, vis, out, world, log) -> list[dict]:
+        from .vision import MODELS
+        maps = []
+        queries = []
+        if world:
+            w0 = world[0]
+            queries.append((f"Match: {w0['name']}", f"a photo of {w0['name']}, {w0['city']}."))
+        queries.append((f"Country: {out['countries'][0]['name']}",
+                        MODELS[self.engine.model_key]["prompt"].format(out["countries"][0]["name"])))
+        for p in vis["probes"]:
+            if p["detected"] and p["id"] in ("architecture", "script", "vegetation", "roads") and p["countries"]:
+                prompt = next(o["prompt"] for g in PROBES if g["id"] == p["id"] for o in g["options"] if o["label"] == p["label"])
+                queries.append((f"{p['title']}: {p['label']}", prompt))
+        for label, q in queries[:5]:
+            with log.timer("attention", f"Attention map — {label}", method="Grad-CAM for ViT (gradient × activation, last block)",
+                           teach="Bright areas are the image patches that pushed the model towards this answer. Use it "
+                                 "to check the model relied on real clues (buildings, signs, vegetation) and not on "
+                                 "artefacts.") as t:
+                m = self.engine.saliency(masked, q)
+                if m:
+                    maps.append({"label": label, **m})
+                    t.detail = "Most attended: " + ", ".join(f"{r['region']} {r['share']*100:.0f}%" for r in m["regions"][:3])
+                    t.data = m["regions"]
+        return maps
+
     def _sun(self, meta, out, log) -> dict:
         loc = out["location"]
         res: dict[str, Any] = {"teach": sun_mod.TEACH, "location": {"lat": loc["lat"], "lon": loc["lon"]}}
@@ -403,27 +591,26 @@ class Analyzer:
             tzname = (loc.get("nearest_city") or {}).get("tz")
             try:
                 from zoneinfo import ZoneInfo
-                local = datetime.fromisoformat(dt["local"]).replace(tzinfo=ZoneInfo(tzname))
-                utc = local.astimezone(timezone.utc)
-                res["time_basis"] = f"EXIF local time interpreted in {tzname} (estimated location's time zone)"
+                utc = datetime.fromisoformat(dt["local"]).replace(tzinfo=ZoneInfo(tzname)).astimezone(timezone.utc)
+                res["time_basis"] = f"EXIF local time interpreted in {tzname}"
             except Exception:
                 utc = None
         if utc:
             sp = sun_mod.solar_position(loc["lat"], loc["lon"], utc)
-            times = sun_mod.sun_times(loc["lat"], loc["lon"], utc)
-            res.update({"utc": utc.isoformat(), "position": sp, "times": times})
-            bright = out["stats"]["brightness"]
-            consistent = (sp["elevation"] > -6) == (bright > 70)
+            res.update({"utc": utc.isoformat(), "position": sp, "times": sun_mod.sun_times(loc["lat"], loc["lon"], utc)})
+            consistent = (sp["elevation"] > -6) == (not out["stats"]["night"] and out["stats"]["brightness"] > 70)
             res["consistent"] = consistent
             log.add("sun", f"Sun at capture time: elevation {sp['elevation']:.1f}°, azimuth {sp['azimuth']:.0f}°",
                     method="NOAA solar position algorithm", level="info" if consistent else "warn",
-                    detail=(f"Shadows should point to bearing {sp['shadow_bearing']:.0f}° and be {sp['shadow_ratio']}× object height. "
+                    detail=(f"Shadows should point to {sp['shadow_bearing']:.0f}° and be {sp['shadow_ratio']}× object height. "
                             if sp["shadow_ratio"] else "Sun below horizon. ") +
-                           ("Image brightness is consistent with this." if consistent else
-                            "Image brightness does NOT match the sun position → wrong time zone, edited timestamp, or a different location."),
+                           ("Image lighting is consistent." if consistent else "Lighting does NOT match → wrong time zone, edited timestamp or different place."),
                     data=res, teach=sun_mod.TEACH)
+        elif out["stats"]["night"]:
+            log.add("sun", "Night-time image — shadow geolocation not applicable", method="Brightness analysis", level="muted",
+                    teach="At night, artificial lighting colour (sodium-orange vs LED-white streetlights) and lit "
+                          "signage replace sun geometry as clues.")
         else:
-            log.add("sun", "No capture time — use the Sun & Shadow tool to measure a shadow manually",
+            log.add("sun", "No capture time — use the shadow tool to measure a shadow manually",
                     method="NOAA solar position algorithm", level="muted", teach=sun_mod.TEACH)
         return res
-

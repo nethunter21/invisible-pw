@@ -10,3 +10,4 @@ rapidocr-onnxruntime>=1.3
 onnxruntime
 pywebview>=5
 tzdata
+opencv-python-headless>=4.8,<5

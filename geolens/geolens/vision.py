@@ -159,9 +159,11 @@ class VisionEngine:
         return canvas, off
 
     @staticmethod
-    def views(img: Image.Image) -> list[dict]:
+    def views(img: Image.Image, extra: list | None = None) -> list[dict]:
         w, h = img.size
         out = [{"name": "Full image", "box": [0, 0, w, h], "img": VisionEngine.letterbox(img)[0], "weight": 2.0}]
+        for n, b in extra or []:
+            out.append({"name": n, "box": list(b), "img": VisionEngine.letterbox(img.crop(tuple(b)))[0], "weight": 1.6})
         boxes = {
             "Top-left": (0, 0, w * 0.6, h * 0.6), "Top-right": (w * 0.4, 0, w, h * 0.6),
             "Bottom-left": (0, h * 0.4, w * 0.6, h), "Bottom-right": (w * 0.4, h * 0.4, w, h),
@@ -179,9 +181,9 @@ class VisionEngine:
         return out
 
     # ------------------------------------------------------------------ analysis
-    def analyze(self, img: Image.Image, log) -> dict:
+    def analyze(self, img: Image.Image, log, extra_views: list | None = None) -> dict:
         res: dict[str, Any] = {}
-        views = self.views(img)
+        views = self.views(img, extra_views)
         with log.timer("vision", f"Encoded {len(views)} image views with {MODELS[self.model_key]['label'].split(' (')[0]}",
                        method="Multi-crop CLIP image embedding",
                        teach="The image is analysed as a whole and as overlapping crops. Crops let the model "
@@ -258,6 +260,82 @@ class VisionEngine:
                     level="info" if detected else "muted")
         res["probes"] = probes_out
         return res
+
+    # ------------------------------------------------------------------ worldwide landmarks & skylines
+    def cached_text(self, prompts: list[str], tag: str):
+        import hashlib
+        torch = self.torch
+        key = hashlib.sha1(("\x1f".join(prompts) + self.model_key).encode()).hexdigest()[:16]
+        mem = f"{tag}:{key}"
+        if mem in self._text_cache:
+            return self._text_cache[mem]
+        d = self.cache_dir or os.path.join(os.path.expanduser("~"), ".geolens_cache")
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, f"txt_{tag}_{key}.pt")
+        emb = None
+        if os.path.exists(path):
+            try:
+                emb = torch.load(path).to(self.device)
+            except Exception:
+                emb = None
+        if emb is None:
+            emb = self.text_emb(prompts)
+            try:
+                torch.save(emb.cpu(), path)
+            except Exception:
+                pass
+        self._text_cache[mem] = emb
+        return emb
+
+    def world_candidates(self) -> list[dict]:
+        if hasattr(self, "_world"):
+            return self._world
+        from .landmarks import TOURIST_CITIES, unique_prompt_entries
+        out = []
+        for e in unique_prompt_entries():
+            out.append({"type": "landmark", "name": e["name"], "city": e["city"], "cc": e["cc"], "lat": e["lat"],
+                        "lon": e["lon"], "kind": e["kind"]})
+        seen = set()
+        for c in sorted(gz.all_cities(), key=lambda c: -c["pop"]):
+            if c["pop"] < 1_000_000:
+                break
+            seen.add((c["name"], c["cc"]))
+            out.append({"type": "city", "name": c["name"], "city": c["name"], "cc": c["cc"], "lat": c["lat"], "lon": c["lon"]})
+        for n, cc, la, lo in TOURIST_CITIES:
+            if (n, cc) not in seen:
+                out.append({"type": "city", "name": n, "city": n, "cc": cc, "lat": la, "lon": lo})
+        self._world = out
+        return out
+
+    def world_places(self, img_e, log, night: bool = False) -> list[dict]:
+        cands = self.world_candidates()
+        tmpl = MODELS[self.model_key]["prompt"]
+        p1, p2 = [], []
+        for c in cands:
+            country = gz.country_name(c["cc"])
+            if c["type"] == "landmark":
+                p1.append(f"a photo of {c['name']}, {c['city']}, {country}.")
+                p2.append(f"{c['name']} in {c['city']}" + (" at night." if night else "."))
+            else:
+                p1.append(tmpl.format(f"{c['name']}, {country}"))
+                p2.append(f"the skyline of {c['name']}, {country}" + (" at night." if night else "."))
+        e = self.cached_text(p1, "world1") + self.cached_text(p2, "world2" + ("n" if night else ""))
+        e = e / e.norm(dim=-1, keepdim=True)
+        P = self._probs(img_e, e)
+        p = 0.5 * P[0] + 0.5 * (P[1:].max(0) if len(P) > 1 else P[0])
+        p = p / p.sum()
+        order = np.argsort(-p)[:12]
+        out = [dict(cands[j], p=float(p[j])) for j in order]
+        log.add("vision", "Worldwide landmark & skyline recognition",
+                method=f"CLIP zero-shot over {len(cands)} landmarks, casinos/hotels and major/tourist cities"
+                       + (" (night-time prompts)" if night else ""),
+                detail=", ".join(f"{o['name']} ({o['cc']}) {o['p']*100:.1f}%" for o in out[:6]),
+                data=[{k: o[k] for k in ("type", "name", "city", "cc", "p")} for o in out],
+                teach="Instead of only asking 'which country?', the image is compared directly with hundreds of "
+                      "named places — famous buildings, casino resorts, skylines. A country classifier can "
+                      "confuse two night skylines of glass towers (Las Vegas vs. Riyadh), but a direct match "
+                      "with 'the Las Vegas Strip at night' or a specific casino is far more discriminative.")
+        return out
 
     def refine_cities(self, img_e, top_countries: list[tuple[str, float]], extra: list[dict], log) -> list[dict]:
         cands: list[dict] = []

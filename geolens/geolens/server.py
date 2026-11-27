@@ -63,7 +63,9 @@ def _run_job(job_id: str):
     log: AnalysisLog = job["log"]
     try:
         with STATE.run_lock:
-            job["result"] = Analyzer(STATE.engine, STATE.settings).run(job["bytes"], job["name"], log)
+            an = Analyzer(STATE.engine, STATE.settings)
+            job["result"] = an.run(job["bytes"], job["name"], log)
+            job["search_img"] = an.search_image
     except Exception as e:
         job["error"] = f"{type(e).__name__}: {e}"
         log.add("error", "Analysis failed", detail=traceback.format_exc(), level="error")
@@ -184,7 +186,7 @@ class Handler(BaseHTTPRequestHandler):
                 job = STATE.jobs.get(b.get("job", ""))
                 if engine not in rev.ENGINES or not job:
                     return self._json({"error": "unknown engine or job"}, 400)
-                img = Image.open(io.BytesIO(job["bytes"])).convert("RGB")
+                img = job.get("search_img") or Image.open(io.BytesIO(job["bytes"])).convert("RGB")
                 try:
                     res = rev.ENGINES[engine](img)
                 except Exception as e:

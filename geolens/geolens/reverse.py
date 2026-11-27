@@ -125,9 +125,23 @@ def yandex(img: Image.Image, domain: str = "yandex.com") -> dict:
     return out
 
 
-def google_lens(img: Image.Image) -> dict:
+def _parse_lens(page: str) -> list[dict]:
+    """Best-effort extraction of (url, title) pairs from a Lens result page's embedded data."""
+    out, seen = [], set()
+    for m in re.finditer(r'"(https?://(?![^"]*(?:google|gstatic|googleapis|youtube\.com/s/))[^"\\]{8,300})"\s*,\s*"([^"\\]{6,160})"', page):
+        url, title = m.group(1), html.unescape(m.group(2))
+        if url in seen or title.startswith("http") or len(title.split()) < 2:
+            continue
+        seen.add(url)
+        dom = re.sub(r"^https?://(www\.)?", "", url).split("/")[0]
+        out.append({"title": title, "url": url, "snippet": "", "domain": dom})
+    return out[:40]
+
+
+def google_lens(img: Image.Image, parse: bool = True) -> dict:
     s = requests.Session()
     s.headers.update(HDR)
+    s.cookies.set("CONSENT", "YES+", domain=".google.com")
     ms = int(time.time() * 1000)
     r = s.post(f"https://lens.google.com/v3/upload?hl=en&re=df&st={ms}&ep=gsbubb",
                files={"encoded_image": ("image.jpg", _jpeg(img), "image/jpeg")}, timeout=TIMEOUT,
@@ -138,7 +152,13 @@ def google_lens(img: Image.Image) -> dict:
         url = html.unescape(m.group(1)) if m else None
     if not url:
         raise RuntimeError("Lens upload returned no result URL (consent page or format change)")
-    return {"engine": "Google Lens", "url": url, "results": []}
+    results = _parse_lens(r.text) if parse else []
+    if parse and not results and r.url != url:
+        try:
+            results = _parse_lens(s.get(url, timeout=TIMEOUT).text)
+        except Exception:
+            pass
+    return {"engine": "Google Lens", "url": url, "results": results}
 
 
 def bing(img: Image.Image) -> dict:
@@ -206,6 +226,82 @@ def nominatim(query: str) -> list[dict]:
         out.append({"name": x.get("display_name", ""), "lat": float(x["lat"]), "lon": float(x["lon"]),
                     "cc": (x.get("address", {}).get("country_code") or "").upper(),
                     "type": x.get("type"), "importance": x.get("importance", 0)})
+    return out
+
+
+def wikipedia_geo(query: str, limit: int = 4) -> list[dict]:
+    """Search Wikipedia (no key) and return hits that carry coordinates."""
+    r = requests.get("https://en.wikipedia.org/w/api.php", headers={"User-Agent": "GeoLens-desktop/1.0"}, timeout=15,
+                     params={"action": "query", "format": "json", "generator": "search", "gsrsearch": query,
+                             "gsrlimit": limit, "prop": "coordinates|description", "colimit": limit})
+    pages = (r.json().get("query") or {}).get("pages", {})
+    out = []
+    for p in sorted(pages.values(), key=lambda p: p.get("index", 99)):
+        co = (p.get("coordinates") or [None])[0]
+        if co:
+            out.append({"name": p["title"], "lat": co["lat"], "lon": co["lon"], "desc": p.get("description", ""),
+                        "url": "https://en.wikipedia.org/wiki/" + quote(p["title"].replace(" ", "_"))})
+    return out
+
+
+_STOPW = set("""the a an of and in on at to for with from by is are was be this that your our you image images photo photos
+picture pictures stock free download hd wallpaper video videos com www http https html jpg png view search results
+similar more page site sites news best top new hotel hotels review reviews tripadvisor booking com night day""".split())
+
+
+def frequent_phrases(titles: list[str], min_count: int = 2, max_n: int = 4) -> list[tuple[str, int]]:
+    """Capitalised word n-grams that recur across independent result titles (candidate place names)."""
+    from collections import Counter
+    cnt: Counter = Counter()
+    for t in titles:
+        words = re.findall(r"[A-Za-zÀ-ž][\w'’\-]+", t)
+        seen = set()
+        for n in range(max_n, 0, -1):
+            for i in range(len(words) - n + 1):
+                g = words[i:i + n]
+                if n == 1 and len(g[0]) < 5:
+                    continue
+                if not g[0][0].isupper() or not g[-1][0].isupper():
+                    continue
+                if all(w.lower() in _STOPW for w in g):
+                    continue
+                key = " ".join(g)
+                if key.lower() not in seen:
+                    seen.add(key.lower())
+                    cnt[key] += 1
+    res = [(k, v) for k, v in cnt.most_common(60) if v >= (min_count if " " in k else max(3, min_count + 1))]
+    # drop phrases contained in a longer phrase with the same count
+    out = []
+    for k, v in res:
+        if not any(k != k2 and k in k2 and v2 >= v for k2, v2 in res):
+            out.append((k, v))
+    return out[:12]
+
+
+def multi_search(queries: list[tuple[str, Image.Image]], engines=("yandex",), workers: int = 3,
+                 on_done=None) -> list[dict]:
+    """Run reverse searches on several image variants (crops, masked, un-mirrored) in parallel."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    jobs = [(label, img, e) for label, img in queries for e in engines]
+    out = []
+
+    def run(label, img, e):
+        t = time.time()
+        try:
+            res = ENGINES[e](img)
+        except Exception as ex:
+            res = {"engine": e, "error": f"{type(ex).__name__}: {ex}", "results": [], "url": MANUAL.get(e)}
+        res["query"] = label
+        res["secs"] = round(time.time() - t, 1)
+        return res
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = [ex.submit(run, *j) for j in jobs]
+        for f in as_completed(futs):
+            r = f.result()
+            out.append(r)
+            if on_done:
+                on_done(r)
     return out
 
 

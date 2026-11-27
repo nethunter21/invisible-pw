@@ -67,3 +67,14 @@ assert res2["location"]["source"] == "EXIF GPS", res2["location"]
 assert abs(res2["location"]["lat"] - 38.71) < 0.01 and res2["location"]["lon"] < 0
 print("gps ok", res2["location"]["nearest_city"]["name"], res2["sun"].get("position"))
 print("ALL TESTS PASSED")
+
+# ---- real-world selfie (mirrored rooftop sign behind a face) -------------------------------
+VEGAS = os.environ.get("GEOLENS_VEGAS")
+if VEGAS and os.path.exists(VEGAS):
+    res3, log3 = run(open(VEGAS, "rb").read(), engine)
+    L = res3["location"]
+    print("vegas:", L["venue"], L["nearest_city"]["name"], L["country"], L["lat"], L["lon"], L["radius_km"], L["confidence"])
+    assert res3["prep"]["mirrored"], "selfie mirror not detected"
+    assert res3["prep"]["faces"], "face not detected"
+    assert L["iso"] == "US" and abs(L["lat"] - 36.11) < 0.2 and abs(L["lon"] + 115.17) < 0.2, L
+    print("VEGAS OK")

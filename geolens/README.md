@@ -6,6 +6,17 @@ It needs **no API keys and no accounts**. Everything except the optional web loo
 
 ![layout](assets/geolens.png)
 
+## What's new in v2
+
+- **Selfie handling.** Front-camera mirroring is detected by comparing OCR readability on the normal and flipped image, and the image is un-mirrored. Faces and bodies are detected (OpenCV) and blurred out, so the vision model and the search engines look at the *place*.
+- **Automatic multi-crop reverse search.** Yandex runs on the person-masked image, on every background crop (above the head, left/right of the person) and on zoomed crops around readable signs. That is the manual trick, automated. Google Lens and TinEye also run automatically. Venue names, places and recurring phrases in all result titles are aggregated and geocoded.
+- **Venue / landmark database.** 200+ casinos, hotels, towers and landmarks, fuzzy-matched against noisy OCR (e.g. `HiltonGrandVacatious` → Hilton Grand Vacations). Multi-site brands are resolved by agreement with the other evidence.
+- **Worldwide landmark & skyline recognition.** The image is compared directly with every venue plus all 1M+ cities and tourist cities, with night-specific prompts. This prevents errors like "glass towers at night → Saudi Arabia".
+- **14-pass OCR.** Normal and mirrored, full frame plus 6 zoomed overlapping tiles, so small rooftop signs get read.
+- **OSM Nominatim + Wikipedia geosearch** for sign text and recurring reverse-search phrases.
+- **Spatial clustering fusion.** Every technique drops candidate points on the map. Points within 35 km are clustered, and clusters backed by several *independent* techniques win. The pin is the weighted centre of the most precise clues.
+- **New UI.** Monochrome, minimal, dark and light themes.
+
 ## What it does
 
 | Technique | How | Online? |
@@ -30,8 +41,9 @@ It needs **no API keys and no accounts**. Everything except the optional web loo
 
 ## Download / run
 
-1. Download `GeoLens-windows-x64.zip` from the GitHub Actions artifact (workflow **Build GeoLens (Windows .exe)**), or from a Release if you push a `geolens-v*` tag.
-2. Unzip it and run `GeoLens\GeoLens.exe`.
+1. Download **`GeoLens-Setup.exe`** from the [`geolens-latest` release](../../releases/tag/geolens-latest). The workflow rebuilds it on every push.
+2. Run it. It is a per-user install with no admin needed, and it adds Start-menu and desktop shortcuts.
+   - Portable alternative: `GeoLens-portable-windows-x64.zip`. Unzip the **whole folder**, then run `GeoLens.exe` inside it. If you see *"Failed to load python3xx.dll"*, the exe was started without its `_internal` folder next to it.
 3. On first run the vision model downloads once (StreetCLIP ≈ 1.7 GB) to `%LOCALAPPDATA%\GeoLens\models`. After that it works offline.
    - In **Settings** you can switch to *CLIP ViT-B/32* (≈ 600 MB, faster on weak CPUs) and turn the online techniques off for sensitive images.
 

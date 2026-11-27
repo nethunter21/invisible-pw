@@ -57,6 +57,81 @@ def run_ocr(img: Image.Image) -> list[dict]:
     return items
 
 
+def _tiles(w: int, h: int) -> list[tuple[int, int, int, int]]:
+    """Overlapping 2-col × 3-row grid (portrait) or 3×2 (landscape)."""
+    cols, rows = (2, 3) if h > w else (3, 2)
+    tw, th = w / cols, h / rows
+    out = []
+    for r in range(rows):
+        for c in range(cols):
+            x0, y0 = max(0, c * tw - tw * 0.2), max(0, r * th - th * 0.2)
+            out.append((int(x0), int(y0), int(min(w, (c + 1) * tw + tw * 0.2)), int(min(h, (r + 1) * th + th * 0.2))))
+    return out
+
+
+def _quality(items: list[dict]) -> float:
+    q = 0.0
+    for i in items:
+        alnum = sum(ch.isalnum() for ch in i["text"])
+        vowels = sum(ch.lower() in "aeiouy" for ch in i["text"])
+        wordlike = 1.0 if alnum >= 4 and 0.2 <= vowels / max(1, alnum) <= 0.7 else 0.4
+        q += i["score"] ** 2 * alnum * wordlike
+    return q
+
+
+def _dedupe(items: list[dict]) -> list[dict]:
+    items = sorted(items, key=lambda i: -i["score"] * len(i["text"]))
+    keep: list[dict] = []
+    for it in items:
+        b = it["box"]
+        dup = False
+        for k in keep:
+            c = k["box"]
+            ix = max(0, min(b[2], c[2]) - max(b[0], c[0]))
+            iy = max(0, min(b[3], c[3]) - max(b[1], c[1]))
+            inter = ix * iy
+            a = max(1, (b[2] - b[0]) * (b[3] - b[1]))
+            if inter / a > 0.5 or (it["text"].lower() == k["text"].lower() and inter > 0):
+                dup = True
+                break
+        if not dup:
+            keep.append(it)
+    return keep
+
+
+def run_ocr_multi(img: Image.Image, log=None) -> tuple[list[dict], dict]:
+    """OCR in both orientations (selfies are mirrored) and on zoomed overlapping tiles (small signs).
+
+    Returns items in the coordinates of `img` *as it should be displayed* (un-mirrored if
+    the image turned out to be mirrored) and info {mirrored, quality_normal, quality_mirrored, passes}.
+    """
+    from PIL import ImageOps
+    w, h = img.size
+    results = {}
+    passes = 0
+    for flip in (False, True):
+        im = ImageOps.mirror(img) if flip else img
+        items = run_ocr(im)
+        passes += 1
+        for (x0, y0, x1, y1) in _tiles(w, h):
+            crop = im.crop((x0, y0, x1, y1))
+            f = min(2.5, 1400 / max(crop.size))
+            if f > 1.1:
+                crop = crop.resize((int(crop.size[0] * f), int(crop.size[1] * f)), Image.BICUBIC)
+            else:
+                f = 1.0
+            for it in run_ocr(crop):
+                bx = it["box"]
+                it["box"] = [int(x0 + bx[0] / f), int(y0 + bx[1] / f), int(x0 + bx[2] / f), int(y0 + bx[3] / f)]
+                items.append(it)
+            passes += 1
+        results[flip] = _dedupe(items)
+    qn, qm = _quality(results[False]), _quality(results[True])
+    mirrored = qm > 1.35 * qn and qm > 8
+    return results[mirrored], {"mirrored": mirrored, "quality_normal": round(qn, 1),
+                               "quality_mirrored": round(qm, 1), "passes": passes}
+
+
 def _strip(s: str) -> str:
     return "".join(ch for ch in unicodedata.normalize("NFKD", s) if not unicodedata.combining(ch)).lower()
 
@@ -115,6 +190,26 @@ def extract_clues(items: list[dict], all_isos: list[str]) -> list[dict]:
     for sym, (cs, ex) in CURRENCY.items():
         if re.search(rf"(?<![A-Za-z]){re.escape(sym)}(?![A-Za-z])", text):
             add("currency", sym, cs, 1.0, f"Price shown with {ex}.")
+    # Named venues / landmarks / brands (fuzzy, OCR-noise tolerant)
+    from .landmarks import match_text
+    seen_lm: set[str] = set()
+    for src in [i["text"] for i in items] + [text]:
+        ms = match_text(src)
+        by_name: dict[str, list[dict]] = {}
+        for m in ms:
+            by_name.setdefault(m["name"], []).append(m)
+        for name, sites in by_name.items():
+            if name in seen_lm:
+                continue
+            seen_lm.add(name)
+            q = max(m["quality"] for m in sites)
+            multi = len(sites) > 1 or sites[0]["kind"] == "brand"
+            where = ", ".join(f"{m['city']} {m['cc']}" for m in sites[:5])
+            add("landmark", name, sorted({m["cc"] for m in sites}), (1.6 if multi else 2.6) * q,
+                f"Text '{src[:40]}' matches '{name}' (similarity {q:.2f}) — " +
+                (f"a brand with sites in {where}; the site agreeing with the other evidence is chosen." if multi
+                 else f"located in {where}."))
+            clues[-1]["sites"] = sites
     # Place names in the gazetteer
     places = gz.find_places(text)[:6]
     same = {}

@@ -2,8 +2,9 @@ name: Build GeoLens (Windows .exe)
 
 on:
   push:
-    paths: ["geolens/**", ".github/workflows/geolens-windows.yml"]
+    branches: ["**"]          # listing only `tags` would silently skip branch pushes
     tags: ["geolens-v*"]
+    paths: ["geolens/**", ".github/workflows/geolens-windows.yml"]
   workflow_dispatch:
 
 permissions:
@@ -49,18 +50,51 @@ jobs:
           Stop-Process -Id $p.Id -Force
           Write-Host "status ok: $($r.settings | ConvertTo-Json -Compress)"
 
-      - name: Zip
+      - name: Build installer (Inno Setup)
         shell: pwsh
-        run: Compress-Archive -Path dist\GeoLens -DestinationPath dist\GeoLens-windows-x64.zip
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          & $iscc installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+
+      - name: Zip (portable)
+        shell: pwsh
+        run: |
+          Set-Content dist\GeoLens\README-FIRST.txt "Unzip the WHOLE folder first, then run GeoLens.exe from inside it. GeoLens.exe needs the _internal folder next to it - do not move or copy the exe on its own, and do not run it from inside the zip."
+          Compress-Archive -Path dist\GeoLens -DestinationPath dist\GeoLens-portable-windows-x64.zip
 
       - uses: actions/upload-artifact@v4
         with:
-          name: GeoLens-windows-x64
-          path: geolens/dist/GeoLens-windows-x64.zip
+          name: GeoLens-Setup
+          path: geolens/dist/GeoLens-Setup.exe
           retention-days: 30
+          compression-level: 0
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GeoLens-portable-windows-x64
+          path: geolens/dist/GeoLens-portable-windows-x64.zip
+          retention-days: 30
+          compression-level: 0
+
+      - name: Publish rolling download (geolens-latest)
+        if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete geolens-latest --cleanup-tag -y --repo ${{ github.repository }} 2>$null
+          $global:LASTEXITCODE = 0
+          gh release create geolens-latest dist/GeoLens-Setup.exe dist/GeoLens-portable-windows-x64.zip `
+            --repo ${{ github.repository }} --target ${{ github.sha }} --prerelease `
+            --title "GeoLens (latest build)" `
+            --notes "Automatic Windows build of ${{ github.sha }}. Download GeoLens-Setup.exe and run it (per-user install, no admin). Portable: unzip the whole folder and run GeoLens.exe inside it."
 
       - name: Publish release (on geolens-v* tags)
         if: startsWith(github.ref, 'refs/tags/geolens-v')
         uses: softprops/action-gh-release@v2
         with:
-          files: geolens/dist/GeoLens-windows-x64.zip
+          files: |
+            geolens/dist/GeoLens-Setup.exe
+            geolens/dist/GeoLens-portable-windows-x64.zip

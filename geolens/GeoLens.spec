@@ -4,6 +4,7 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy
 datas = [("geolens/ui", "geolens/ui"), ("geolens/data", "geolens/data")]
 datas += collect_data_files("rapidocr_onnxruntime")
 datas += collect_data_files("webview")
+datas += collect_data_files("cv2", includes=["data/*.xml"])
 for pkg in ("transformers", "tokenizers", "huggingface_hub", "safetensors", "tqdm", "regex", "requests",
             "packaging", "filelock", "numpy", "pyyaml", "torch"):
     try:
