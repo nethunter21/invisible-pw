@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GeoLens</title>
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand" id="homeBtn" title="New analysis">
+    <svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true"><circle cx="16" cy="16" r="13" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 16h26M16 3c4 4 5.5 8.5 5.5 13S20 25 16 29c-4-4-5.5-8.5-5.5-13S12 7 16 3z" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="22" cy="10" r="3.2" fill="var(--accent)"/></svg>
+    <span>GeoLens</span><small>GEOINT image analyser</small>
+  </div>
+  <div class="top-actions">
+    <span class="pill" id="modelPill" title="Vision model status"><i class="dot"></i><span>model…</span></span>
+    <button class="btn ghost" id="newBtn" hidden>New image</button>
+    <button class="btn ghost" id="exportBtn" hidden>Export</button>
+    <button class="btn ghost" id="settingsBtn">Settings</button>
+    <button class="btn primary" id="logBtn" disabled>
+      <svg viewBox="0 0 24 24" width="16" height="16"><path d="M4 5h16M4 10h16M4 15h10M4 20h7" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+      Log <span class="count" id="logCount">0</span>
+    </button>
+  </div>
+</header>
+
+<!-- ============================= LANDING ============================= -->
+<main id="landing" class="landing">
+  <div class="hero">
+    <h1>Where was this photo taken?</h1>
+    <p>Drop any photo. GeoLens combines a street-level vision model, OCR, metadata, sun geometry and key-less reverse image search (Yandex, Google Lens, Bing, TinEye) — and shows you exactly how it reasoned.</p>
+    <label class="drop" id="drop">
+      <input type="file" id="file" accept="image/*" hidden>
+      <svg viewBox="0 0 48 48" width="46" height="46"><path d="M24 31V13m0 0-7 7m7-7 7 7M10 33v4a3 3 0 0 0 3 3h22a3 3 0 0 0 3-3v-4" stroke="currentColor" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <strong>Drop an image here</strong>
+      <span>or click to browse · or paste with Ctrl+V</span>
+    </label>
+    <div class="features">
+      <div><b>Visual geolocation</b><span>StreetCLIP zero-shot over 230+ countries &amp; 15k cities</span></div>
+      <div><b>Pattern recognition</b><span>Architecture, script, vegetation, roads, poles, vehicles…</span></div>
+      <div><b>Sun &amp; shadows</b><span>Shadow-based geolocation and chronolocation</span></div>
+      <div><b>Explainable</b><span>Attention heatmaps and a full teaching log</span></div>
+    </div>
+  </div>
+</main>
+
+<!-- ============================= LOADING ============================= -->
+<section id="loading" class="loading" hidden>
+  <div class="load-card">
+    <div class="load-img"><img id="loadImg" alt=""><div class="scan"></div></div>
+    <div class="load-body">
+      <h2 id="loadStage">Analysing…</h2>
+      <div class="bar"><i id="loadBar"></i></div>
+      <ol id="liveSteps" class="live"></ol>
+    </div>
+  </div>
+</section>
+
+<!-- ============================= RESULT ============================= -->
+<section id="result" class="result" hidden>
+  <div class="col-left">
+    <div class="card viewer">
+      <div class="viewer-tools">
+        <div class="seg" id="overlaySeg">
+          <button data-ov="none" class="on">Photo</button>
+          <button data-ov="heat">Attention</button>
+          <button data-ov="crops">Crops</button>
+          <button data-ov="text">Text</button>
+        </div>
+        <select id="heatSel" hidden></select>
+        <button class="btn small ghost" id="shadowBtn" title="Click object base, object top, then shadow tip">Measure shadow</button>
+      </div>
+      <div class="stage" id="stage">
+        <img id="photo" alt="">
+        <img id="heat" alt="" hidden>
+        <svg id="ovl"></svg>
+      </div>
+      <div class="viewer-hint" id="viewerHint"></div>
+    </div>
+
+    <div class="card answer">
+      <div class="answer-head">
+        <div>
+          <div class="eyebrow">Estimated location</div>
+          <h2 id="ansPlace">—</h2>
+          <div class="coords"><span id="ansCoords"></span><button class="link" id="copyBtn">copy</button><button class="link" id="gmapsBtn">Google Maps</button><button class="link" id="svBtn">Street View</button></div>
+        </div>
+        <div class="conf">
+          <div class="ring" id="confRing"><span id="confPct">0%</span></div>
+          <small id="confLbl"></small>
+        </div>
+      </div>
+      <div class="method" id="ansMethod"></div>
+      <ul class="reasoning" id="reasoning"></ul>
+    </div>
+  </div>
+
+  <div class="col-right">
+    <div class="card mapcard"><div id="map"></div></div>
+    <div class="card tabs">
+      <nav class="tabbar" id="tabbar">
+        <button data-tab="loc" class="on">Locations</button>
+        <button data-tab="clues">Clues</button>
+        <button data-tab="text">Text</button>
+        <button data-tab="rev">Reverse search</button>
+        <button data-tab="sun">Sun &amp; shadows</button>
+        <button data-tab="meta">Metadata</button>
+      </nav>
+      <div class="tabpane" data-pane="loc"></div>
+      <div class="tabpane" data-pane="clues" hidden></div>
+      <div class="tabpane" data-pane="text" hidden></div>
+      <div class="tabpane" data-pane="rev" hidden></div>
+      <div class="tabpane" data-pane="sun" hidden></div>
+      <div class="tabpane" data-pane="meta" hidden></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================= LOG DRAWER ============================= -->
+<aside id="drawer" class="drawer" aria-hidden="true">
+  <div class="drawer-head">
+    <div><h3>Analysis log</h3><small>Every technique GeoLens ran, what it found and why it is used</small></div>
+    <button class="btn ghost small" id="drawerClose">Close</button>
+  </div>
+  <div class="drawer-summary" id="logSummary"></div>
+  <div class="drawer-filter" id="logFilter"></div>
+  <div class="drawer-body" id="logList"></div>
+</aside>
+<div id="scrim" class="scrim" hidden></div>
+
+<!-- ============================= SETTINGS ============================= -->
+<dialog id="settings">
+  <form method="dialog" class="settings">
+    <h3>Settings</h3>
+    <label>Vision model<select id="setModel"></select></label>
+    <p class="muted small">Models download once from the Hugging Face hub (no account or key) and then run offline on your PC.</p>
+    <label class="chk"><input type="checkbox" id="setOnline"> Allow online techniques (reverse search, OSM geocoding)</label>
+    <label class="chk"><input type="checkbox" id="setReverse"> Run Yandex + TinEye automatically</label>
+    <label class="chk"><input type="checkbox" id="setGeocode"> Geocode text found in the image (OpenStreetMap Nominatim)</label>
+    <label class="chk"><input type="checkbox" id="setOcr"> OCR (read signs)</label>
+    <label class="chk"><input type="checkbox" id="setAttn"> Attention heatmaps</label>
+    <p class="muted small">Online techniques upload the image to the respective search engine. Turn them off for sensitive images.</p>
+    <div class="row-end"><button class="btn ghost" value="cancel">Cancel</button><button class="btn primary" id="setSave" value="ok">Save</button></div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" hidden></div>
+<script src="vendor/leaflet/leaflet.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

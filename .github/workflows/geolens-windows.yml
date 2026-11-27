@@ -1,0 +1,66 @@
+name: Build GeoLens (Windows .exe)
+
+on:
+  push:
+    paths: ["geolens/**", ".github/workflows/geolens-windows.yml"]
+    tags: ["geolens-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: geolens
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: geolens/requirements.txt
+
+      - name: Install dependencies (CPU torch)
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt pyinstaller
+
+      - name: Offline tests (tiny random CLIP, OCR, EXIF, sun maths)
+        run: |
+          python tests/make_tiny_clip.py "$env:RUNNER_TEMP\tinyclip"
+          python tests/test_pipeline.py "$env:RUNNER_TEMP\tinyclip"
+
+      - name: Build with PyInstaller
+        run: pyinstaller GeoLens.spec --noconfirm
+
+      - name: Smoke-test the frozen exe (server + UI + API)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\GeoLens\GeoLens.exe -ArgumentList "--browser","--port","8799","--no-vision" -PassThru
+          Start-Sleep -Seconds 25
+          $r = Invoke-RestMethod http://127.0.0.1:8799/api/status
+          $html = Invoke-WebRequest http://127.0.0.1:8799/ -UseBasicParsing
+          if (-not $html.Content.Contains("GeoLens")) { throw "UI not served" }
+          Stop-Process -Id $p.Id -Force
+          Write-Host "status ok: $($r.settings | ConvertTo-Json -Compress)"
+
+      - name: Zip
+        shell: pwsh
+        run: Compress-Archive -Path dist\GeoLens -DestinationPath dist\GeoLens-windows-x64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GeoLens-windows-x64
+          path: geolens/dist/GeoLens-windows-x64.zip
+          retention-days: 30
+
+      - name: Publish release (on geolens-v* tags)
+        if: startsWith(github.ref, 'refs/tags/geolens-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: geolens/dist/GeoLens-windows-x64.zip
