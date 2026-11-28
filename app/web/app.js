@@ -1,6 +1,11 @@
-/* VAULTSEARCH frontend. Talks to Go bindings (window.go*). When those are
+/* QUIET SEARCH frontend. Talks to Go bindings (window.go*). When those are
    absent (plain browser preview) it falls back to an in-memory MOCK so the UI
-   is fully explorable for screenshots/testing. */
+   is fully explorable for screenshots/testing.
+
+   Import is fully asynchronous: picking files or dropping one returns
+   immediately, and the actual parsing/indexing happens in a Go goroutine that
+   reports progress through window.__vsEvent(...) events. This keeps the UI
+   thread free no matter how large or how many files are being imported. */
 "use strict";
 
 const HAS_BACKEND = typeof window.goListDatasets === "function";
@@ -12,8 +17,12 @@ const api = {
   async resolve(id,d){ return HAS_BACKEND ? J(await goResolve(id,d||2)) : MOCK.resolve(id); },
   async duplicates(n){ return HAS_BACKEND ? J(await goDuplicates(n||50)) : MOCK.duplicates(); },
   async stats(){ return HAS_BACKEND ? J(await goStats()) : MOCK.stats(); },
-  async pickImport(){ return HAS_BACKEND ? J(await goPickAndImport()) : MOCK.import(); },
-  async importBytes(n,b){ return HAS_BACKEND ? J(await goImportBytes(n,b)) : MOCK.import(); },
+  async pickFiles(){ return HAS_BACKEND ? J(await goPickFiles()) : MOCK.pickFiles(); },
+  async importPaths(paths){ return HAS_BACKEND ? J(await goImportPaths(JSON.stringify(paths))) : MOCK.importPaths(paths); },
+  async chunkStart(){ return HAS_BACKEND ? J(await goChunkStart()) : MOCK.chunkStart(); },
+  async chunkAppend(tok,b64){ return HAS_BACKEND ? J(await goChunkAppend(tok,b64)) : {ok:true}; },
+  async chunkFinish(tok,name){ return HAS_BACKEND ? J(await goChunkFinish(tok,name)) : MOCK.chunkFinish(name); },
+  async chunkAbort(tok){ return HAS_BACKEND ? J(await goChunkAbort(tok)) : {ok:true}; },
   async rename(id,n){ return HAS_BACKEND ? J(await goRename(id,n)) : {ok:true}; },
   async del(id){ return HAS_BACKEND ? J(await goDelete(id)) : MOCK.del(id); },
   async getRecord(id){ return HAS_BACKEND ? J(await goGetRecord(id)) : MOCK.record(id); },
@@ -56,16 +65,68 @@ async function refreshStats(){
 }
 const fmt=n=>String(n).replace(/\B(?=(\d{3})+(?!\d))/g,",");
 
-/* ---------------- import ---------------- */
-async function doImport(){
-  const res=await api.pickImport();
-  handleImport(res);
+/* ---------------- import (async job + progress) ---------------- */
+let JOB=null; // {active:bool, index, total, name, done, rows}
+
+// Fired by Go via window.__vsEvent(...) during background import/delete.
+window.__vsEvent = function(ev){
+  if(!ev||!ev.type)return;
+  switch(ev.type){
+    case "file_start":
+      JOB={active:true,index:ev.index,total:ev.total,name:ev.name,done:0,rows:0};
+      renderJobBar();
+      break;
+    case "row_progress":
+      if(JOB){JOB.index=ev.index;JOB.total=ev.fileTotal;JOB.name=ev.name;JOB.done=ev.done;JOB.rows=ev.rows;}
+      renderJobBar();
+      break;
+    case "file_done":
+      if(ev.error)toast("✕ "+ev.name+": "+ev.error,true);
+      else toast("✓ Indexed "+ev.dataset.name+" — "+fmt(ev.dataset.rows)+" rows · "+ev.dataset.cols+" cols");
+      if(STATE.view==="db"||STATE.view==="dash")refreshView();
+      break;
+    case "job_done":
+      JOB=null;renderJobBar();
+      refreshStats();
+      if(STATE.view==="db"||STATE.view==="dash")refreshView();
+      break;
+    case "dataset_deleted":
+      STATE.datasets=STATE.datasets.filter(d=>d.id!==ev.id);
+      refreshStats();
+      if(STATE.view==="db")renderDBs();
+      break;
+    case "dataset_delete_error":
+      toast("Delete failed: "+ev.error,true);
+      renderDBs();
+      break;
+  }
+};
+function refreshView(){ if(STATE.view==="db")renderDBs(); else if(STATE.view==="dash")renderDash(); }
+
+function renderJobBar(){
+  let bar=$("#jobbar");
+  if(!JOB){ if(bar)bar.remove(); return; }
+  if(!bar){
+    bar=el("div","jobbar");bar.id="jobbar";
+    document.querySelector(".topbar").insertAdjacentElement("afterend",bar);
+  }
+  const pct=JOB.rows>0?Math.min(100,Math.round(JOB.done/JOB.rows*100)):(JOB.done>0?100:0);
+  bar.innerHTML=`
+    <div class="jobbar-row">
+      <span class="jobbar-spin"></span>
+      <span class="jobbar-txt">INDEXING ${esc(JOB.name)} — FILE ${JOB.index+1}/${JOB.total}${JOB.rows?` · ${fmt(JOB.done)}/${fmt(JOB.rows)} ROWS`:""}</span>
+      <span class="jobbar-pct">${pct}%</span>
+    </div>
+    <div class="jobbar-track"><i style="width:${pct}%"></i></div>`;
 }
-function handleImport(res){
+
+async function doImport(){
+  const res=await api.pickFiles();
   if(res&&res.error){toast("Import failed: "+res.error,true);return;}
-  if(!res||!res.length){return;}
-  let ok=0;res.forEach(r=>{if(r.error){toast("✕ "+r.error,true);}else{ok++;toast("✓ Indexed "+r.dataset.name+" — "+fmt(r.dataset.rows)+" rows · "+r.dataset.cols+" cols");}});
-  if(ok)go(STATE.view==="dash"?"db":STATE.view);
+  const paths=(res&&res.paths)||[];
+  if(!paths.length)return;
+  const started=await api.importPaths(paths);
+  if(started&&started.error)toast("Import failed: "+started.error,true);
 }
 
 /* ==================================================================
@@ -144,7 +205,7 @@ async function renderDBs(){
     const acts=card.querySelector(".acts");
     const bExp=el("button","btn sm","⌕ Explore");bExp.onclick=ev=>{ev.stopPropagation();STATE.scope=d.id;go("search");};
     const bRen=el("button","btn sm","✎ Rename");bRen.onclick=async ev=>{ev.stopPropagation();const n=prompt("Rename dataset:",d.name);if(n){await api.rename(d.id,n);toast("Renamed");renderDBs();}};
-    const bDel=el("button","btn sm danger","⌫ Delete");bDel.onclick=async ev=>{ev.stopPropagation();if(confirm("Delete "+d.name+"?")){await api.del(d.id);toast("Deleted");renderDBs();refreshStats();}};
+    const bDel=el("button","btn sm danger","⌫ Delete");bDel.onclick=async ev=>{ev.stopPropagation();if(confirm("Delete "+d.name+"?")){card.style.opacity=.4;card.style.pointerEvents="none";await api.del(d.id);toast("Deleting "+d.name+"…");}};
     acts.append(bExp,bRen,bDel);
     card.onclick=()=>openSchema(d);
     g.append(card);
@@ -288,7 +349,7 @@ function drawGraph(g){
     const a=pos[e.from],b=pos[e.to];if(!a||!b)return;
     const ln=document.createElementNS(NS,"line");
     ln.setAttribute("x1",a.x);ln.setAttribute("y1",a.y);ln.setAttribute("x2",b.x);ln.setAttribute("y2",b.y);
-    ln.setAttribute("stroke","rgba(40,224,180,.35)");ln.setAttribute("stroke-width","1.2");
+    ln.setAttribute("stroke","rgba(244,246,248,.3)");ln.setAttribute("stroke-width","1.2");
     svg.append(ln);
     // label at 42% from source, nudged perpendicular to clear the nodes
     const t=0.42,mx=a.x+(b.x-a.x)*t,my=a.y+(b.y-a.y)*t;
@@ -296,7 +357,7 @@ function drawGraph(g){
     const ox=-dy/len*7,oy=dx/len*7;
     const mid=document.createElementNS(NS,"text");
     mid.setAttribute("x",mx+ox);mid.setAttribute("y",my+oy);
-    mid.setAttribute("fill","#5a7f93");mid.setAttribute("font-size","7.5");mid.setAttribute("font-family","JetBrains Mono");
+    mid.setAttribute("fill","#7a7f87");mid.setAttribute("font-size","7.5");mid.setAttribute("font-family","JetBrains Mono");
     mid.setAttribute("text-anchor","middle");mid.setAttribute("letter-spacing","0.5");
     mid.textContent=[...e.kinds].map(k=>k.toUpperCase()).join("+");
     svg.append(mid);
@@ -307,17 +368,17 @@ function drawGraph(g){
     const gp=document.createElementNS(NS,"g");gp.style.cursor="pointer";
     const c=document.createElementNS(NS,"circle");
     c.setAttribute("cx",p.x);c.setAttribute("cy",p.y);c.setAttribute("r",isRoot?17:12);
-    c.setAttribute("fill",isRoot?"rgba(40,224,180,.18)":"rgba(58,160,255,.12)");
-    c.setAttribute("stroke",isRoot?"#28e0b4":"#3aa0ff");c.setAttribute("stroke-width",isRoot?"2":"1.4");
-    if(isRoot)c.setAttribute("filter","drop-shadow(0 0 10px rgba(40,224,180,.6))");
+    c.setAttribute("fill",isRoot?"rgba(244,246,248,.16)":"rgba(244,246,248,.05)");
+    c.setAttribute("stroke",isRoot?"#f4f6f8":"#7a7f87");c.setAttribute("stroke-width",isRoot?"2":"1.4");
+    if(isRoot)c.setAttribute("filter","drop-shadow(0 0 8px rgba(244,246,248,.5))");
     const label=pickLabel(n.data);
     const tx=document.createElementNS(NS,"text");
     tx.setAttribute("x",p.x);tx.setAttribute("y",p.y+(isRoot?30:24));tx.setAttribute("text-anchor","middle");
-    tx.setAttribute("fill",isRoot?"#28e0b4":"#aebfce");tx.setAttribute("font-size","9");tx.setAttribute("font-family","JetBrains Mono");
+    tx.setAttribute("fill",isRoot?"#f4f6f8":"#c4c8cd");tx.setAttribute("font-size","9");tx.setAttribute("font-family","JetBrains Mono");
     tx.textContent=label;
     const ds=document.createElementNS(NS,"text");
     ds.setAttribute("x",p.x);ds.setAttribute("y",p.y+(isRoot?42:36));ds.setAttribute("text-anchor","middle");
-    ds.setAttribute("fill","#4a6a7e");ds.setAttribute("font-size","7.5");ds.setAttribute("font-family","JetBrains Mono");
+    ds.setAttribute("fill","#7a7f87");ds.setAttribute("font-size","7.5");ds.setAttribute("font-family","JetBrains Mono");
     ds.textContent=(n.dataset||"").toUpperCase();
     gp.append(c,tx,ds);
     gp.onclick=async()=>{CONN_SEED=n.recordId;const ng=await api.resolve(n.recordId,3);drawGraph(ng);drawConnSide(ng);};
@@ -390,15 +451,44 @@ function wireDrop(z){
   ["dragleave","drop"].forEach(e=>z.addEventListener(e,ev=>{ev.preventDefault();z.classList.remove("hot");}));
   z.addEventListener("drop",async ev=>{
     const files=[...(ev.dataTransfer?.files||[])];
-    for(const f of files){
-      const b64=await fileB64(f);
-      const r=await api.importBytes(f.name,b64);
-      handleImport([r]);
-    }
+    for(const f of files)await uploadDropped(f);
   });
   z.addEventListener("click",doImport);
 }
-function fileB64(f){return new Promise(res=>{const r=new FileReader();r.onload=()=>res(String(r.result).split(",")[1]||"");r.readAsDataURL(f);});}
+
+// Streams a dropped file to Go in small chunks instead of one giant base64
+// string — this is what used to freeze/crash the app on a single large drop.
+// Each chunk is a small, fast bind call, so the UI stays responsive and the
+// file size is effectively unbounded.
+const CHUNK_BYTES = 2*1024*1024; // 2MB per chunk before base64 inflation
+async function uploadDropped(file){
+  const {token,error}=await api.chunkStart();
+  if(error){toast("Upload failed: "+error,true);return;}
+  const total=file.size||0;
+  let sent=0;
+  try{
+    let offset=0;
+    while(offset<file.size){
+      const slice=file.slice(offset,offset+CHUNK_BYTES);
+      const buf=await slice.arrayBuffer();
+      const b64=bytesToBase64(new Uint8Array(buf));
+      const r=await api.chunkAppend(token,b64);
+      if(r&&r.error)throw new Error(r.error);
+      offset+=CHUNK_BYTES;sent+=buf.byteLength;
+      if(total>CHUNK_BYTES*2)toast("⭱ Uploading "+file.name+" — "+Math.min(100,Math.round(sent/total*100))+"%");
+    }
+    const r=await api.chunkFinish(token,file.name);
+    if(r&&r.error)toast("Import failed: "+r.error,true);
+  }catch(e){
+    api.chunkAbort(token);
+    toast("Upload failed: "+(e.message||e),true);
+  }
+}
+function bytesToBase64(bytes){
+  let binary="";const chunk=0x8000;
+  for(let i=0;i<bytes.length;i+=chunk)binary+=String.fromCharCode.apply(null,bytes.subarray(i,i+chunk));
+  return btoa(binary);
+}
 
 /* ==================================================================
    MOCK backend (browser preview only)
@@ -447,11 +537,28 @@ const MOCK=(()=>{
     106:{id:106,datasetId:2,dataset:"BILLING LEDGER",data:{customer_id:"ACC-51120",email:"m.santos@gmail.com",amount:"0.00",status:"trial",invoice_date:"2024-06-02",card_last4:"—"}},
   };
   const ALL=Object.values(RECS);
+  function fakeJob(name,rows){
+    const total=rows||3201;
+    let done=0;
+    window.__vsEvent&&window.__vsEvent({type:"file_start",index:0,total:1,name});
+    setTimeout(function tick(){
+      done=Math.min(total,done+Math.ceil(total/8));
+      window.__vsEvent&&window.__vsEvent({type:"row_progress",index:0,fileTotal:1,name,done,rows:total});
+      if(done<total)setTimeout(tick,120);
+      else{
+        window.__vsEvent&&window.__vsEvent({type:"file_done",index:0,total:1,name,dataset:{id:Date.now(),name,rows:total,cols:5}});
+        window.__vsEvent&&window.__vsEvent({type:"job_done",total:1});
+      }
+    },120);
+  }
   return {
     stats:()=>({datasets:DS.length,records:45397,indexed:88210}),
     list:()=>DS.slice(),
-    del:id=>{const i=DS.findIndex(d=>d.id===id);if(i>=0)DS.splice(i,1);return{ok:true};},
-    import:()=>[{dataset:{id:99,name:"NEW SOURCE",rows:3201,cols:5}}],
+    del:id=>{setTimeout(()=>window.__vsEvent&&window.__vsEvent({type:"dataset_deleted",id}),200);return{started:true};},
+    pickFiles:()=>({paths:["signups_demo.csv"]}),
+    importPaths:paths=>{(paths||["demo.csv"]).forEach(p=>fakeJob(p.split(/[\\/]/).pop(),120000));return{started:true,count:(paths||[]).length};},
+    chunkStart:()=>({token:"mock"}),
+    chunkFinish:name=>{fakeJob(name,250000);return{started:true};},
     record:id=>RECS[id]||ALL[0],
     search:(q,ds)=>{let r=ALL;if(ds)r=r.filter(x=>x.datasetId===ds);
       if(q)r=r.filter(x=>JSON.stringify(x.data).toLowerCase().includes(q.toLowerCase()));

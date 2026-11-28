@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -24,6 +25,11 @@ func decodeB64(s string) ([]byte, error) {
 
 func baseName(p string) string {
 	return filepath.Base(p)
+}
+
+func fileExists(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && !info.IsDir()
 }
 
 func cleanName(n string) string {

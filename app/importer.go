@@ -17,7 +17,21 @@ var errEmpty = fmt.Errorf("empty file")
 // parseFile turns a supported file into (header, rows). It auto-detects both the
 // file format and, for text files, the delimiter (comma, tab, semicolon, pipe,
 // or colon — URL-safe), falling back to a single column only when nothing splits.
+// The result is always passed through cleanRows before being returned, so blank
+// rows and 100%-empty "noise" columns never reach indexing.
 func parseFile(path string, raw []byte) (header []string, rows [][]string, err error) {
+	header, rows, err = parseFileRaw(path, raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	header, rows = cleanRows(header, rows)
+	if len(header) == 0 || len(rows) == 0 {
+		return nil, nil, fmt.Errorf("no usable rows found in file")
+	}
+	return header, rows, nil
+}
+
+func parseFileRaw(path string, raw []byte) (header []string, rows [][]string, err error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
 	case ".json", ".ndjson":
@@ -46,6 +60,71 @@ func parseFile(path string, raw []byte) (header []string, rows [][]string, err e
 		}
 		return sniffDelimited(raw)
 	}
+}
+
+// cleanRows drops rows that are entirely blank (common trailing noise from
+// Excel sheets, combo-list exports and ragged delimited files) and drops
+// columns that are 100% empty across the whole file — the "999 useless blank
+// columns" case — while always keeping at least one column.
+func cleanRows(header []string, rows [][]string) ([]string, [][]string) {
+	if len(header) == 0 {
+		return header, rows
+	}
+	nonEmpty := make([]bool, len(header))
+	kept := make([][]string, 0, len(rows))
+	for _, r := range rows {
+		blank := true
+		for i := range header {
+			var v string
+			if i < len(r) {
+				v = strings.TrimSpace(r[i])
+			}
+			if v != "" {
+				blank = false
+				nonEmpty[i] = true
+			}
+		}
+		if !blank {
+			kept = append(kept, r)
+		}
+	}
+	// decide which columns to drop (entirely empty across every kept row)
+	dropAny := false
+	for i, has := range nonEmpty {
+		_ = i
+		if !has {
+			dropAny = true
+		}
+	}
+	if !dropAny {
+		return header, kept
+	}
+	keepIdx := make([]int, 0, len(header))
+	for i, has := range nonEmpty {
+		if has {
+			keepIdx = append(keepIdx, i)
+		}
+	}
+	if len(keepIdx) == 0 {
+		// everything was blank — keep the first column so the caller still
+		// sees a (now genuinely empty) dataset rather than a hard failure.
+		keepIdx = []int{0}
+	}
+	newHeader := make([]string, len(keepIdx))
+	for j, i := range keepIdx {
+		newHeader[j] = header[i]
+	}
+	newRows := make([][]string, len(kept))
+	for ri, r := range kept {
+		nr := make([]string, len(keepIdx))
+		for j, i := range keepIdx {
+			if i < len(r) {
+				nr[j] = r[i]
+			}
+		}
+		newRows[ri] = nr
+	}
+	return newHeader, newRows
 }
 
 func looksJSON(raw []byte) bool {

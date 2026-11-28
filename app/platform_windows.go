@@ -11,7 +11,29 @@ import (
 var (
 	comdlg32         = syscall.NewLazyDLL("comdlg32.dll")
 	procGetOpenFileW = comdlg32.NewProc("GetOpenFileNameW")
+
+	dwmapi                    = syscall.NewLazyDLL("dwmapi.dll")
+	procDwmSetWindowAttribute = dwmapi.NewProc("DwmSetWindowAttribute")
 )
+
+// Windows 10 1809 used attribute 19 for immersive dark mode; 1903+ and 11 use 20.
+const (
+	dwmwaUseImmersiveDarkMode20 = 20
+	dwmwaUseImmersiveDarkMode19 = 19
+)
+
+// setDarkTitlebar makes the native window caption/border dark so it matches
+// the app's theme instead of showing the default white Windows titlebar.
+// Safe to call on any Windows build — an attribute the OS doesn't recognize
+// is simply ignored (non-zero HRESULT, no crash).
+func setDarkTitlebar(hwnd uintptr) {
+	if hwnd == 0 {
+		return
+	}
+	v := int32(1)
+	procDwmSetWindowAttribute.Call(hwnd, uintptr(dwmwaUseImmersiveDarkMode20), uintptr(unsafe.Pointer(&v)), unsafe.Sizeof(v))
+	procDwmSetWindowAttribute.Call(hwnd, uintptr(dwmwaUseImmersiveDarkMode19), uintptr(unsafe.Pointer(&v)), unsafe.Sizeof(v))
+}
 
 type openfilename struct {
 	lStructSize       uint32

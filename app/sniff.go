@@ -77,22 +77,23 @@ func sniffDelimited(raw []byte) ([]string, [][]string, error) {
 		return singleColumn(lines), rowsToCells(lines, 0, nil), nil
 	}
 
-	// Split every line on the detected delimiter, URL-safe.
-	var rows [][]string
+	// Split every line on the detected delimiter, URL-safe. SplitN is capped at
+	// the modal field count: a stray outlier line with extra delimiter
+	// characters (e.g. a note or description containing a colon) folds its
+	// overflow back into the final column instead of inflating every other
+	// row with blank padding columns.
 	maxCols := best.fields
+	var rows [][]string
 	for _, l := range lines {
 		m, urls := maskURLs(l)
-		parts := strings.Split(m, string(best.delim))
+		parts := strings.SplitN(m, string(best.delim), maxCols)
 		cells := make([]string, len(parts))
 		for i, p := range parts {
 			cells[i] = strings.TrimSpace(unmask(unquote(p), urls))
 		}
-		if len(cells) > maxCols {
-			maxCols = len(cells)
-		}
 		rows = append(rows, cells)
 	}
-	// normalize ragged rows to maxCols
+	// pad only the rare short row (e.g. a truncated final line) up to maxCols
 	for i := range rows {
 		for len(rows[i]) < maxCols {
 			rows[i] = append(rows[i], "")

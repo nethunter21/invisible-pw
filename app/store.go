@@ -47,7 +47,13 @@ func openStore() (*Store, error) {
 	} else {
 		dir, _ = os.Getwd()
 	}
-	path := filepath.Join(dir, "vaultsearch.db")
+	path := filepath.Join(dir, "quietsearch.db")
+	// migrate a database created by an earlier build (vaultsearch.db) in place
+	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+		if old := filepath.Join(dir, "vaultsearch.db"); fileExists(old) {
+			os.Rename(old, path)
+		}
+	}
 	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, err
@@ -103,7 +109,16 @@ type ImportResult struct {
 	Error   string  `json:"error,omitempty"`
 }
 
-func (s *Store) saveDataset(name, source string, cols []ColumnMeta, records [][]string, header []string) (Dataset, error) {
+// batchSize bounds how many rows go into a single transaction. Heavy imports
+// (hundreds of thousands of rows) are committed incrementally instead of in one
+// giant transaction, so progress can be reported and memory/WAL growth stays
+// bounded no matter how large the source file is.
+const batchSize = 2000
+
+// saveDataset ingests records in batches, calling progress(done,total) after
+// each committed batch (progress may be nil). It never holds a single
+// transaction for the whole file, so it scales to very large imports.
+func (s *Store) saveDataset(name, source string, cols []ColumnMeta, records [][]string, header []string, progress func(done, total int)) (Dataset, error) {
 	tc := map[string]int{}
 	for _, c := range cols {
 		tc[c.Kind]++
@@ -112,24 +127,55 @@ func (s *Store) saveDataset(name, source string, cols []ColumnMeta, records [][]
 	tcJSON, _ := json.Marshal(tc)
 	now := time.Now().Format("2006-01-02 15:04")
 
-	tx, err := s.db.Begin()
+	res, err := s.db.Exec(`INSERT INTO datasets(name,source,rows,cols,created,columns,typecount,tags) VALUES(?,?,?,?,?,?,?,?)`,
+		name, source, 0, len(header), now, string(colJSON), string(tcJSON), "{}")
 	if err != nil {
-		return Dataset{}, err
-	}
-	res, err := tx.Exec(`INSERT INTO datasets(name,source,rows,cols,created,columns,typecount,tags) VALUES(?,?,?,?,?,?,?,?)`,
-		name, source, len(records), len(header), now, string(colJSON), string(tcJSON), "{}")
-	if err != nil {
-		tx.Rollback()
 		return Dataset{}, err
 	}
 	dsID, _ := res.LastInsertId()
 
-	recStmt, _ := tx.Prepare(`INSERT INTO records(dataset_id,data,blob) VALUES(?,?,?)`)
-	keyStmt, _ := tx.Prepare(`INSERT INTO idkeys(record_id,dataset_id,kind,norm) VALUES(?,?,?,?)`)
+	total := len(records)
+	inserted := 0
+	for start := 0; start < total; start += batchSize {
+		end := start + batchSize
+		if end > total {
+			end = total
+		}
+		if err := s.insertBatch(dsID, cols, header, records[start:end]); err != nil {
+			// keep whatever was already committed rather than losing the whole
+			// import; report what we have so the UI can show a partial result.
+			s.db.Exec(`UPDATE datasets SET rows=? WHERE id=?`, inserted, dsID)
+			return s.getDataset(dsID)
+		}
+		inserted = end
+		if progress != nil {
+			progress(inserted, total)
+		}
+	}
+	s.db.Exec(`UPDATE datasets SET rows=? WHERE id=?`, inserted, dsID)
+	return s.getDataset(dsID)
+}
+
+func (s *Store) insertBatch(dsID int64, cols []ColumnMeta, header []string, batch [][]string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	recStmt, err := tx.Prepare(`INSERT INTO records(dataset_id,data,blob) VALUES(?,?,?)`)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+	keyStmt, err := tx.Prepare(`INSERT INTO idkeys(record_id,dataset_id,kind,norm) VALUES(?,?,?,?)`)
+	if err != nil {
+		recStmt.Close()
+		tx.Rollback()
+		return err
+	}
 	defer recStmt.Close()
 	defer keyStmt.Close()
 
-	for _, row := range records {
+	for _, row := range batch {
 		obj := map[string]string{}
 		var blob strings.Builder
 		for i, h := range header {
@@ -147,10 +193,9 @@ func (s *Store) saveDataset(name, source string, cols []ColumnMeta, records [][]
 		r, err := recStmt.Exec(dsID, string(dataJSON), blob.String())
 		if err != nil {
 			tx.Rollback()
-			return Dataset{}, err
+			return err
 		}
 		rid, _ := r.LastInsertId()
-		// index identity keys for cross-dataset linking
 		for i, c := range cols {
 			if c.Role != "identity" {
 				continue
@@ -165,10 +210,7 @@ func (s *Store) saveDataset(name, source string, cols []ColumnMeta, records [][]
 			}
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return Dataset{}, err
-	}
-	return s.getDataset(dsID)
+	return tx.Commit()
 }
 
 func (s *Store) getDataset(id int64) (Dataset, error) {
