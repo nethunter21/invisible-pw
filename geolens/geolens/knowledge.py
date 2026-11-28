@@ -35,7 +35,7 @@ PROBES: list[dict] = [
         ],
     },
     {
-        "id": "driving", "title": "Driving side", "weight": 1.2,
+        "id": "driving", "scenes": ["urban", "rural_road", "mixed", "portrait"], "title": "Driving side", "weight": 1.2,
         "teach": "About 75 countries drive on the left — mostly former British territories plus Japan, Thailand "
                  "and Indonesia. Look at which side parked cars face, which side of the car the driver sits, "
                  "and which lane oncoming traffic uses. This single clue removes roughly 2/3 of the world.",
@@ -48,7 +48,7 @@ PROBES: list[dict] = [
         ],
     },
     {
-        "id": "script", "title": "Writing system on signs", "weight": 1.6,
+        "id": "script", "scenes": ["urban", "rural_road", "mixed", "portrait"], "title": "Writing system on signs", "weight": 1.6,
         "teach": "Scripts are one of the strongest clues: Cyrillic narrows to the ex-USSR, Balkans and Mongolia; "
                  "Hangul is Korea; Thai script is Thailand; Georgian and Armenian alphabets are unique to one "
                  "country each. Even if you cannot read it, recognising the script's shapes is enough.",
@@ -77,7 +77,7 @@ PROBES: list[dict] = [
         ],
     },
     {
-        "id": "architecture", "title": "Architecture", "weight": 0.9,
+        "id": "architecture", "scenes": ["urban", "rural_road", "mixed", "portrait", "waterside"], "title": "Architecture", "weight": 0.9,
         "teach": "Buildings encode climate, history and building codes. Steep roofs mean snow; flat roofs mean "
                  "dry climates; Soviet prefab panel blocks survive from Berlin to Vladivostok; whitewashed "
                  "cubes are Mediterranean; rooftop water tanks and exposed rebar are typical of South Asia and "
@@ -156,7 +156,7 @@ PROBES: list[dict] = [
         ],
     },
     {
-        "id": "roofs", "title": "Roof material", "weight": 0.4,
+        "id": "roofs", "scenes": ["urban", "rural_road", "mixed", "portrait", "waterside"], "title": "Roof material", "weight": 0.4,
         "teach": "Roofs are visible even in aerial imagery. Terracotta tiles are Mediterranean/Latin; slate is "
                  "north-western Europe; corrugated iron is the tropics and Australia; flat concrete roofs mean "
                  "low rainfall; glazed curved tiles suggest East Asia.",
@@ -189,7 +189,7 @@ PROBES: list[dict] = [
              "countries": ["@EU", "US", "CA", "JP", "KR", "CN"]},
             {"label": "Mediterranean scrub & olive trees", "prompt": "dry Mediterranean landscape with olive trees",
              "countries": ["ES", "PT", "IT", "GR", "TR", "HR", "MA", "TN", "IL", "CY", "AL"]},
-            {"label": "Desert", "prompt": "a sandy desert landscape",
+            {"label": "Desert", "prompt": "a sandy desert landscape", "scenes": ["arid", "mixed", "rural_road"],
              "countries": MENA + ["US", "MX", "CL", "PE", "AU", "NA", "MN", "KZ", "UZ", "TM"]},
             {"label": "Savanna with acacias", "prompt": "African savanna with acacia trees",
              "countries": ["KE", "TZ", "UG", "ZA", "BW", "NA", "ZW", "ZM", "ET", "SN"]},
@@ -199,12 +199,12 @@ PROBES: list[dict] = [
              "countries": SEA + ["CN", "IN", "BD", "LK", "JP", "KR", "NP"]},
             {"label": "Steppe grassland", "prompt": "flat open steppe grassland",
              "countries": ["KZ", "MN", "RU", "UA", "AR", "US"]},
-            {"label": "Tundra / barren", "prompt": "barren tundra with no trees",
+            {"label": "Tundra / barren", "prompt": "barren tundra with no trees", "scenes": ["natural", "snow", "arid", "mixed", "rural_road", "waterside"],
              "countries": ["IS", "NO", "RU", "CA", "GL", "FO"]},
         ],
     },
     {
-        "id": "roads", "title": "Road markings & surface", "weight": 0.6,
+        "id": "roads", "scenes": ["urban", "rural_road", "mixed", "portrait", "arid", "snow"], "title": "Road markings & surface", "weight": 0.6,
         "teach": "Road lines are standardised per country. A yellow centre line means the Americas (also Japan, "
                  "Korea and a few others for no-passing). Europe uses white centre lines; Nordic countries "
                  "use yellow centre lines too. Red-dirt roads point to Brazil, sub-Saharan Africa or Australia.",
@@ -222,7 +222,7 @@ PROBES: list[dict] = [
         ],
     },
     {
-        "id": "poles", "title": "Utility poles & wires", "weight": 0.4,
+        "id": "poles", "scenes": ["urban", "rural_road", "mixed", "portrait"], "title": "Utility poles & wires", "weight": 0.4,
         "teach": "Pole material and wiring are surprisingly country-specific. Wooden poles with transformers are "
                  "North America, Japan and Australia; perforated concrete poles are Eastern Europe and Latin "
                  "America; chaotic bundles of cables are South/Southeast Asia; no overhead lines at all suggests "
@@ -239,7 +239,7 @@ PROBES: list[dict] = [
         ],
     },
     {
-        "id": "vehicles", "title": "Vehicles", "weight": 0.6,
+        "id": "vehicles", "scenes": ["urban", "rural_road", "mixed", "portrait"], "title": "Vehicles", "weight": 0.6,
         "teach": "The vehicle mix reflects income, import rules and culture: tuk-tuks in South/Southeast Asia, "
                  "swarms of scooters in Vietnam and Taiwan, kei-cars in Japan, pickup trucks in the US, "
                  "marshrutka minibuses in the ex-USSR, matatus and boda-bodas in East Africa.",
@@ -258,7 +258,7 @@ PROBES: list[dict] = [
         ],
     },
     {
-        "id": "signs", "title": "Road-sign style", "weight": 0.5,
+        "id": "signs", "scenes": ["urban", "rural_road", "mixed", "portrait"], "title": "Road-sign style", "weight": 0.5,
         "teach": "The Vienna Convention (most of Europe, Asia, Africa) uses red-bordered triangles and circles; "
                  "the Americas, Australia and parts of Asia use yellow diamond warning signs; green highway "
                  "signs are US/Latin America/Australia, blue motorway signs are much of Europe.",
@@ -275,6 +275,48 @@ PROBES: list[dict] = [
         ],
     },
     {
+        "id": "plates", "scenes": ["urban", "rural_road", "mixed", "portrait"], "title": "Licence plates", "weight": 0.9,
+        "teach": "Plate shape and colour are standardised per country/region: EU plates are long and white with a blue "
+                 "band on the left; the UK and the Netherlands use yellow rear plates; North American plates are short "
+                 "and wide with state graphics; Japan has small green-on-white or yellow kei plates.",
+        "options": [
+            {"label": "EU long white plate with blue band", "prompt": "a long white european licence plate with a blue band on the left",
+             "countries": ["FR", "DE", "IT", "ES", "PT", "NL", "BE", "AT", "PL", "CZ", "SK", "HU", "RO", "BG", "GR", "IE", "LU", "SI", "HR", "LT", "LV", "EE", "FI", "SE", "DK"]},
+            {"label": "Yellow rear plate", "prompt": "a yellow rectangular rear licence plate on a car",
+             "countries": ["GB", "NL", "LU", "IL", "CY", "SR", "GY"]},
+            {"label": "North-American short wide plate", "prompt": "a small american state licence plate with graphics", "countries": ["US", "CA", "MX"]},
+            {"label": "Japanese plate", "prompt": "a small japanese licence plate with green characters", "countries": ["JP"]},
+            {"label": "No plate visible", "prompt": "no licence plates visible", "countries": []},
+        ],
+    },
+    {
+        "id": "lights", "scenes": ["urban", "rural_road", "mixed", "portrait"], "title": "Traffic lights & street furniture", "weight": 0.6,
+        "teach": "Street furniture is procured nationally: horizontal traffic lights are typical of Japan and parts of "
+                 "the US; overhead span-wire signals are North American; red-white kerbs are common in Mediterranean "
+                 "and Latin countries; black-and-white kerbs and chevron bollards are Eastern European/Russian.",
+        "options": [
+            {"label": "Signals hung on span wires", "prompt": "traffic lights hanging from wires over an intersection", "countries": ["US", "CA", "MX"]},
+            {"label": "Horizontal traffic lights", "prompt": "horizontal traffic lights", "countries": ["JP", "US", "KR", "TW"]},
+            {"label": "Red-and-white painted kerb", "prompt": "a curb painted red and white", "countries": ["IT", "ES", "PT", "GR", "TR", "AR", "BR", "MX", "IL", "CY", "MT", "AU"]},
+            {"label": "Black-and-white painted kerb", "prompt": "a curb painted black and white", "countries": ["RU", "UA", "BY", "KZ", "ZA", "IN", "LK", "PK", "PL"]},
+            {"label": "Yellow-black painted kerb", "prompt": "a curb painted yellow and black", "countries": ["IN", "MY", "SG", "TH", "ID", "PH", "AE", "SA"]},
+            {"label": "Nothing distinctive", "prompt": "an ordinary street", "countries": []},
+        ],
+    },
+    {
+        "id": "density", "scenes": ["urban", "mixed", "portrait"], "title": "Urban form", "weight": 0.5,
+        "teach": "City layout reflects history and planning: grid plans with wide streets are typical of the Americas "
+                 "and Australia; narrow medieval lanes of Europe and MENA; dense high-rise towers of East Asia and the Gulf; "
+                 "low informal sprawl of South Asia, Africa and Latin America.",
+        "options": [
+            {"label": "Dense historic old town", "prompt": "narrow old european streets with historic buildings", "countries": ["@EU"]},
+            {"label": "Wide car-oriented grid", "prompt": "a wide american street grid with big parking lots", "countries": ["US", "CA", "AU", "MX"]},
+            {"label": "High-rise residential towers", "prompt": "dense high-rise residential towers", "countries": ["CN", "HK", "KR", "SG", "TW", "AE", "RU"]},
+            {"label": "Informal low-rise sprawl", "prompt": "dense informal low-rise housing", "countries": ["IN", "PK", "BD", "NG", "KE", "EG", "BR", "PE", "PH", "ID"]},
+            {"label": "Suburban detached houses", "prompt": "a suburb of detached houses with gardens", "countries": ["US", "CA", "AU", "NZ", "GB", "IE", "DE", "NL", "BE", "FR"]},
+        ],
+    },
+    {
         "id": "terrain", "title": "Soil & terrain", "weight": 0.35,
         "teach": "Soil colour comes from geology: red laterite (iron oxide) dominates Brazil, central Africa, India "
                  "and Australia; black volcanic soil suggests Iceland, Canaries, Hawaii, Indonesia; snow and "
@@ -284,7 +326,7 @@ PROBES: list[dict] = [
              "countries": ["BR", "AU", "@AF", "IN", "PY"]},
             {"label": "Black volcanic ground", "prompt": "black volcanic rock and lava fields",
              "countries": ["IS", "ES", "US", "ID", "JP", "IT", "CR", "NZ"]},
-            {"label": "Snow-covered", "prompt": "snow covered ground", "countries": ["RU", "CA", "FI", "SE", "NO", "IS", "US", "JP", "KZ", "MN"]},
+            {"label": "Snow-covered", "prompt": "snow covered ground", "scenes": ["snow", "mixed", "natural", "rural_road", "urban"], "countries": ["RU", "CA", "FI", "SE", "NO", "IS", "US", "JP", "KZ", "MN"]},
             {"label": "Rugged high mountains", "prompt": "high rugged snowy mountains",
              "countries": ["CH", "AT", "IT", "FR", "NP", "PE", "BO", "CL", "AR", "KG", "TJ", "CN", "US", "CA", "NZ", "NO"]},
             {"label": "Flat farmland", "prompt": "flat agricultural farmland",

@@ -46,7 +46,7 @@
     <div class="caps">
       <div><b>01</b><span>Image prep</span><small>Un-mirror selfies, mask people, cut scene crops</small></div>
       <div><b>02</b><span>Text</span><small>14-pass OCR, 200+ venues, language rules</small></div>
-      <div><b>03</b><span>Vision</span><small>StreetCLIP, skylines, 12 clue families</small></div>
+      <div><b>03</b><span>Vision + landscape</span><small>StreetCLIP, skylines, 15 clue families, 36 species, climate, season</small></div>
       <div><b>04</b><span>Search</span><small>Yandex on every crop, Lens, TinEye, OSM, Wiki</small></div>
       <div><b>05</b><span>Fusion</span><small>Spatial clustering of independent clues</small></div>
     </div>
@@ -113,6 +113,7 @@
       <nav class="tabbar" id="tabbar">
         <button data-tab="loc" class="on">LOCATION</button>
         <button data-tab="clues">CLUES</button>
+        <button data-tab="land">LANDSCAPE</button>
         <button data-tab="text">TEXT</button>
         <button data-tab="rev">REVERSE SEARCH</button>
         <button data-tab="prep">PREP</button>
@@ -121,6 +122,7 @@
       </nav>
       <div class="tabpane" data-pane="loc"></div>
       <div class="tabpane" data-pane="clues" hidden></div>
+      <div class="tabpane" data-pane="land" hidden></div>
       <div class="tabpane" data-pane="text" hidden></div>
       <div class="tabpane" data-pane="rev" hidden></div>
       <div class="tabpane" data-pane="prep" hidden></div>
@@ -160,6 +162,7 @@
 
 <div id="toast" class="toast" hidden></div>
 <script src="vendor/leaflet/leaflet.js"></script>
+<script src="vendor/leaflet/leaflet-heat.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

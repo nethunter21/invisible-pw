@@ -6,6 +6,18 @@ It needs **no API keys and no accounts**. Everything except the optional web loo
 
 ![layout](assets/geolens.png)
 
+## What's new in v2.1 — landscape & low-information recon
+
+For photos with no text and no landmark (a riverbank, a forest road, a field), GeoLens now reasons like a human analyst:
+
+- **Scene composition.** A 4×4 grid is labelled cell by cell (sky, trees, grass, water, buildings, road, sand, rock, snow…) and the scene family is derived from those fractions. Clue families that don't apply to that scene are switched off, e.g. no "desert" or "road markings" verdict for a city or a riverbank.
+- **36 plant/tree indicators with mapped ranges.** Lombardy poplars, Italian cypress, plane trees, olive, stone pine, birch, spruce, larch, eucalyptus, coconut/date/fan palms, baobab, acacia, bamboo, rice, tea, vineyards, lavender and more. Each has real-world range boxes, so detection narrows the map *below* country level.
+- **Köppen climate class, season → hemisphere** (foliage state × EXIF month), landform and water-body type.
+- **Spectral indices.** Excess-green vegetation index, sky blueness, haze, dry grass, bare soil.
+- **Prompt ensembles** for every probe, plus landscape-specific country prompts for natural scenes.
+- **Region probability heatmap.** About 15k places are scored by country × species ranges × climate × hemisphere × visual city similarity. Images that can't be pinned honestly get a heatmap and a ranked list of regions to check on satellite imagery.
+- **More urban recon.** Licence-plate formats, traffic lights and kerb/bollard paint, urban form.
+
 ## What's new in v2
 
 - **Selfie handling.** Front-camera mirroring is detected by comparing OCR readability on the normal and flipped image, and the image is un-mirrored. Faces and bodies are detected (OpenCV) and blurred out, so the vision model and the search engines look at the *place*.

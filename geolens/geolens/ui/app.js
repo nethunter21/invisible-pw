@@ -76,7 +76,7 @@ function render(R) {
   $("#newBtn").hidden = false; $("#exportBtn").hidden = false;
   const L = R.location;
   $("#photo").src = R.image.src;
-  $("#ansPlace").textContent = L.venue || L.city || L.country;
+  $("#ansPlace").textContent = L.venue || (L.radius_km > 300 ? L.country : L.radius_km >= 30 ? `Around ${L.city || L.country}` : L.city || L.country);
   $("#ansSub").textContent = [L.venue ? L.city : null, L.country].filter(Boolean).join(", ") + (L.nearest_city && L.nearest_city.name !== L.city ? ` · nearest locality ${L.nearest_city.name}` : "");
   $("#ansCoords").textContent = `${L.lat.toFixed(5)}, ${L.lon.toFixed(5)}  ±${L.radius_km < 1 ? Math.round(L.radius_km * 1000) + " m" : L.radius_km + " km"}`;
   $("#confBar").style.width = Math.round(L.confidence * 100) + "%";
@@ -151,12 +151,26 @@ function renderMap(R) {
     const osm = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "© OpenStreetMap contributors", maxZoom: 19 });
     S.layerCtl = L.control.layers({ Map: S.base, Satellite: sat, Streets: osm }, {}, { position: "topright" }).addTo(S.map);
     L.control.scale({ imperial: false }).addTo(S.map);
+    S.layers.heat = L.layerGroup().addTo(S.map);
+    S.layers.ranges = L.layerGroup();
     S.layers.main = L.layerGroup().addTo(S.map);
     S.layers.sun = L.layerGroup().addTo(S.map);
+    S.layerCtl.addOverlay(S.layers.heat, "Probability heatmap");
+    S.layerCtl.addOverlay(S.layers.ranges, "Species / climate ranges");
+    S.layerCtl.addOverlay(S.layers.main, "Clues & pin");
   }
-  S.layers.main.clearLayers(); S.layers.sun.clearLayers();
+  S.layers.main.clearLayers(); S.layers.sun.clearLayers(); S.layers.heat.clearLayers(); S.layers.ranges.clearLayers();
   const Lc = R.location;
   const fg = theme() === "light" ? "#000" : "#fff";
+  const hp = (R.heat && R.heat.points) || [];
+  if (hp.length && L.heatLayer) {
+    const mx = hp[0][2] || 1;
+    S.layers.heat.addLayer(L.heatLayer(hp.map((p) => [p[0], p[1], Math.sqrt(p[2] / mx)]), {
+      radius: 22, blur: 18, minOpacity: 0.25, maxZoom: 9,
+      gradient: theme() === "light" ? { 0.2: "#bbb", 0.5: "#777", 0.8: "#333", 1: "#000" } : { 0.2: "#333", 0.5: "#888", 0.8: "#ccc", 1: "#fff" } }));
+  }
+  for (const sp of ((R.landscape || {}).species || []).slice(0, 3))
+    for (const b of sp.boxes) S.layers.ranges.addLayer(L.rectangle([[b[0], b[2]], [b[1], b[3]]], { color: fg, weight: 1, dashArray: "4 4", fillOpacity: 0.03 }).bindTooltip(esc(sp.label) + " range"));
   for (const [i, c] of (R.clusters || []).entries()) {
     if (i === 0) continue;
     S.layers.main.addLayer(L.circleMarker([c.lat, c.lon], { radius: 5 + 14 * Math.sqrt(c.score), color: fg, weight: 1, opacity: 0.6, fillOpacity: 0.08, dashArray: "3 3" })
@@ -168,7 +182,11 @@ function renderMap(R) {
   S.layers.main.addLayer(L.circle([Lc.lat, Lc.lon], { radius: Math.max(80, Lc.radius_km * 1000), color: fg, weight: 1.2, fillOpacity: 0.06 }));
   S.layers.main.addLayer(L.marker([Lc.lat, Lc.lon], { icon: L.divIcon({ className: "", html: '<div class="pin"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }) })
     .bindPopup(`<b>${esc($("#ansPlace").textContent)}</b><br>${esc(Lc.lat.toFixed(5))}, ${esc(Lc.lon.toFixed(5))}`));
-  setTimeout(() => { S.map.invalidateSize(); S.map.fitBounds(L.latLng(Lc.lat, Lc.lon).toBounds(Math.max(1500, Lc.radius_km * 2600)), { maxZoom: 15, padding: [20, 20] }); }, 60);
+  setTimeout(() => {
+    S.map.invalidateSize();
+    if (Lc.radius_km > 40 && hp.length) S.map.fitBounds(hp.slice(0, 150).map((p) => [p[0], p[1]]), { padding: [30, 30], maxZoom: 8 });
+    else S.map.fitBounds(L.latLng(Lc.lat, Lc.lon).toBounds(Math.max(1500, Lc.radius_km * 2600)), { maxZoom: 15, padding: [20, 20] });
+  }, 60);
 }
 
 /* ---------------------------------------------------------------- tabs */
@@ -207,7 +225,7 @@ function renderTabs(R) {
   const scene = probes.find((p) => p.id === "scene");
   if (scene) h += `<p class="muted small">Scene: <b>${esc(scene.label)}</b> (${pct(scene.prob, 0)}). Countries consistent with ${esc(R.countries[0].name)} are highlighted.</p>`;
   for (const p of probes.filter((p) => p.id !== "scene").sort((a, b) => b.detected - a.detected || b.prob * b.weight - a.prob * a.weight)) {
-    h += `<div class="clue ${p.detected ? "" : "weak"}"><div class="clue-h"><span class="t">${esc(p.title)}</span><span class="l">${esc(p.label)}</span><span class="tag ${p.detected ? "on" : ""}">${p.detected ? "DETECTED" : "WEAK"} ${pct(p.prob, 0)}</span></div>
+    h += `<div class="clue ${p.detected ? "" : "weak"}"><div class="clue-h"><span class="t">${esc(p.title)}</span><span class="l">${esc(p.label)}</span><span class="tag ${p.detected ? "on" : ""}">${p.applicable === false ? "N/A FOR SCENE" : p.detected ? "DETECTED" : "WEAK"} ${pct(p.prob, 0)}</span></div>
       ${p.explain ? `<p>${esc(p.explain)}</p>` : ""}
       <p class="small muted">Strongest in: ${esc(p.best_view)} · alternatives: ${p.ranking.slice(1).map((r) => esc(r[0]) + " " + pct(r[1], 0)).join(", ")}</p>
       ${p.countries.length ? `<div class="chips">${p.countries.slice(0, 44).map((c) => `<span class="chip ${c === top ? "hit" : ""}">${esc(c)}</span>`).join("")}${p.countries.length > 44 ? `<span class="chip">+${p.countries.length - 44}</span>` : ""}</div>` : ""}
@@ -227,6 +245,7 @@ function renderTabs(R) {
   if ((R.geocoded || []).length) h += "<h4>Geocoded (OpenStreetMap / Wikipedia)</h4>" + R.geocoded.map((g) => `<div class="row"><div class="grow"><div class="name">${esc(g.query)}</div><div class="sub">${esc(g.name)}</div></div><span class="tag">${esc(g.cc || "")}</span></div>`).join("");
   pane("text").innerHTML = h;
 
+  renderLand(R);
   renderReverse(R);
   renderPrep(R);
   renderSun(R);
@@ -242,6 +261,36 @@ function renderTabs(R) {
     <div>Brightness / contrast</div><div>${R.stats.brightness} / ${R.stats.contrast}${R.stats.night ? " · night" : ""}</div></div>`;
   if (Object.keys(m.raw || {}).length) h += "<h4>Raw tags</h4><div class='kv'>" + Object.entries(m.raw).map(([k, v]) => `<div>${esc(k)}</div><div>${esc(v)}</div>`).join("") + "</div>";
   pane("meta").innerHTML = h;
+}
+
+function renderLand(R) {
+  const ld = R.landscape || {}, top = R.countries[0].iso;
+  let h = "";
+  const regs = (R.heat && R.heat.regions) || [];
+  if (regs.length) {
+    h += "<h4>Most probable regions (heatmap)</h4>";
+    for (const r of regs.slice(0, 6)) h += `<div class="row"><span class="tag">${esc(r.cc)}</span><div class="grow"><div class="name">Around ${esc(r.name)}</div><div class="sub">${r.lat.toFixed(2)}, ${r.lon.toFixed(2)} · ${r.n} places</div></div><div class="meter"><i style="width:${Math.min(100, r.p * 100 / regs[0].p)}%"></i></div><span class="pct">${pct(r.p)}</span><button class="chipbtn" data-fly="${r.lat},${r.lon}">VIEW</button></div>`;
+    h += `<div class="teach">For images without a unique landmark, the honest answer is a probability surface. Every known place is scored by country likelihood × species ranges × climate × hemisphere × visual similarity. Use SATELLITE layer + the regions above to search for the exact spot (river bends, tree lines, bridges).</div>`;
+  }
+  const comp = ld.composition;
+  if (comp && comp.fractions) {
+    h += `<h4>Scene composition — ${esc(comp.family_label)}</h4>`;
+    for (const [k, v] of Object.entries(comp.fractions).sort((a, b) => b[1] - a[1]).filter((x) => x[1] >= 0.03)) h += `<div class="hbar"><span>${esc(k)}</span><div class="meter"><i style="width:${v * 100}%"></i></div><span class="pct">${pct(v, 0)}</span></div>`;
+    h += `<div class="chips" style="display:grid;grid-template-columns:repeat(${comp.grid.length},1fr);gap:3px;max-width:340px;margin-top:8px">${comp.grid.flat().map((l) => `<span class="chip" style="text-align:center">${esc(l)}</span>`).join("")}</div>`;
+  }
+  if ((ld.species || []).length) {
+    h += "<h4>Plant & tree indicators</h4>";
+    for (const sp of ld.species) h += `<div class="clue"><div class="clue-h"><span class="t">SPECIES</span><span class="l">${esc(sp.label)}</span><span class="tag on">${pct(sp.p, 0)}</span></div><p>${esc(sp.teach)}</p>${sp.countries.length ? `<div class="chips">${sp.countries.slice(0, 44).map((c) => `<span class="chip ${c === top ? "hit" : ""}">${esc(c)}</span>`).join("")}</div>` : ""}</div>`;
+  }
+  if ((ld.climate || []).length) h += "<h4>Climate (Köppen)</h4>" + ld.climate.map((c) => `<div class="row"><span class="tag">${esc(c.code)}</span><div class="grow">${esc(c.label)}</div><div class="meter"><i style="width:${c.p * 100}%"></i></div><span class="pct">${pct(c.p, 0)}</span></div>`).join("");
+  if (ld.season) h += `<h4>Season & hemisphere</h4><div class="row"><div class="grow">${esc(ld.season.label)} (${pct(ld.season.p, 0)})</div><span class="tag ${ld.hemisphere ? "on" : ""}">${ld.hemisphere ? esc(ld.hemisphere.toUpperCase()) + "ERN HEMISPHERE" : "HEMISPHERE UNDECIDED"}</span></div>`;
+  if (ld.landform || ld.water) h += `<h4>Terrain & water</h4><div class="kv"><div>Landform</div><div>${esc(ld.landform ? ld.landform.label : "—")}</div><div>Water</div><div>${esc(ld.water ? ld.water.label : "—")}</div></div>`;
+  if (ld.spectral) {
+    const s = ld.spectral;
+    h += `<h4>Spectral indices</h4><div class="kv"><div>Vegetation (ExG)</div><div>${pct(s.vegetation_index, 0)} of pixels</div><div>Sky blueness</div><div>${s.sky_blueness}</div><div>Haze</div><div>${s.haze ?? "—"}</div><div>Saturation</div><div>${s.saturation}</div><div>Bare soil</div><div>${pct(s.bare_soil, 0)}</div><div>Dry grass</div><div>${pct(s.dry_grass, 0)}</div></div>`;
+  }
+  if (!h) h = `<p class="muted">Landscape recon needs the vision model.</p>`;
+  $(`.tabpane[data-pane="land"]`).innerHTML = h;
 }
 
 function renderReverse(R) {
@@ -424,7 +473,7 @@ function setTheme(t) {
 }
 function exportJSON() {
   const R = JSON.parse(JSON.stringify(S.result));
-  delete R.image.src; if (R.prep) delete R.prep.masked_src; (R.attention || []).forEach((m) => delete m.png);
+  delete R.image.src; if (R.prep) delete R.prep.masked_src; if (R.heat) R.heat.points = R.heat.points.slice(0, 200); (R.attention || []).forEach((m) => delete m.png);
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([JSON.stringify({ result: R, log: S.log }, null, 2)], { type: "application/json" }));
   a.download = (S.result.filename || "image").replace(/\.[^.]+$/, "") + "_geolens.json"; a.click();
@@ -467,6 +516,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#gmapsBtn").addEventListener("click", () => { const L = S.result.location; openExternal(`https://www.google.com/maps/search/?api=1&query=${L.lat},${L.lon}`); });
   $("#svBtn").addEventListener("click", () => { const L = S.result.location; openExternal(`https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${L.lat},${L.lon}`); });
   document.body.addEventListener("click", async (e) => {
+    const fly = e.target.closest("[data-fly]"); if (fly) { const [a, b] = fly.dataset.fly.split(",").map(Number); S.map.flyTo([a, b], 9); return; }
     const o = e.target.closest("[data-open]"); if (o) { e.preventDefault(); e.stopPropagation(); openExternal(o.dataset.open); return; }
     const s = e.target.closest("[data-search]"); if (s) { openExternal("https://www.google.com/search?q=" + encodeURIComponent(s.dataset.search)); return; }
     const r = e.target.closest("[data-rev]");

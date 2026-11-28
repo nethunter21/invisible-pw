@@ -26,6 +26,7 @@ from PIL import Image, ImageOps
 from . import exif as exif_mod
 from . import gazetteer as gz
 from . import landmarks as lm
+from . import landscape as ls
 from . import ocr as ocr_mod
 from . import person as person_mod
 from . import reverse as rev
@@ -74,6 +75,7 @@ class Analyzer:
     def __init__(self, engine, settings: dict | None = None):
         self.engine = engine
         self.search_image = None
+        self._land: dict = {}
         self.settings = dict(DEFAULT_SETTINGS, **(settings or {}))
 
     # ======================================================================= run
@@ -182,6 +184,11 @@ class Analyzer:
                                          "countries": [cc], "weight": 2.6 * p,
                                          "explain": "Direct similarity to named places/skylines in that country."})
         out["world"] = [{k: w_[k] for k in ("type", "name", "city", "cc", "lat", "lon", "p")} for w_ in world]
+
+        # ------------------------------------------------------------ 4b. landscape / ecology recon
+        log.set_stage("Landscape & ecology recon", 0.4)
+        self._land = self._landscape(vis, masked, meta, all_isos, evidence, log)
+        out["landscape"] = {k: v for k, v in self._land.items() if k != "factors"}
 
         # ------------------------------------------------------------ 5. text clues
         ocr_clues = ocr_mod.extract_clues(ocr_items, all_isos) if ocr_items else []
@@ -426,6 +433,8 @@ class Analyzer:
             return post / post.sum()
 
         post = posterior(evidence)
+        # --- landscape region heatmap (probability surface over ~15k places)
+        heat = self._heat(vis, {iso: float(post[idx[iso]]) for iso in isos}, cands, log)
         # --- spatial clustering of location candidates
         country_lookup = {iso: float(post[idx[iso]]) for iso in isos}
         for c in cands:  # country posterior acts as a soft prior on candidates
@@ -522,9 +531,115 @@ class Analyzer:
             top = [(c["iso"], c["prob"]) for c in countries[:3] if c["prob"] > 0.03] or [(topc, 1.0)]
             city_rows = self.engine.refine_cities(vis["img_e"], top, [], log)
         reasoning = self._reasoning(loc, countries, evidence, vis, meta, cl_out)
-        return {"location": loc, "countries": countries, "clusters": cl_out,
+        return {"location": loc, "countries": countries, "clusters": cl_out, "heat": heat,
                 "cities": [{k: c[k] for k in ("name", "cc", "lat", "lon", "pop", "score") if k in c} for c in city_rows[:8]],
                 "evidence": evidence, "reasoning": reasoning}
+
+    def _landscape(self, vis, masked, meta, all_isos, evidence, log) -> dict:
+        land: dict[str, Any] = {"factors": []}
+        with log.timer("landscape", "Spectral analysis of the scene", method="Excess-green index, sky blueness, haze, saturation, soil & dry-grass ratios",
+                       teach=ls.TEACH["spectral"]) as t:
+            sp = ls.spectral(masked)
+            land["spectral"] = sp
+            t.detail = ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in sp.items() if v is not None)
+            t.data = sp
+        if not vis:
+            return land
+        comp = vis.get("composition") or {}
+        land["composition"] = comp
+        fam = vis.get("family", "mixed")
+        img_e = vis["img_e"]
+        eng = self.engine
+        # species / plant indicators
+        p, _ = eng.option_probs(img_e, [x[2] for x in ls.SPECIES], "species")
+        order = np.argsort(-p)
+        found = []
+        for j in order[:5]:
+            sid, label, prompts, boxes, teach = ls.SPECIES[j]
+            if sid == "none" or p[j] < 0.08:
+                continue
+            found.append({"id": sid, "label": label, "p": round(float(p[j]), 3), "boxes": boxes, "teach": teach,
+                          "countries": ls.species_countries(boxes, all_isos)})
+        veg_share = sum(comp.get("fractions", {}).get(k, 0) for k in ("trees", "grass", "crops")) if comp else 0.5
+        damp = 1.0 if veg_share >= 0.15 else 0.4  # few plants in frame → weaker species evidence
+        land["species"] = found
+        for f in found[:3]:
+            w = 1.3 * f["p"] * damp
+            land["factors"].append({"boxes": f["boxes"], "p": min(0.95, f["p"] * 1.6 * damp), "label": f["label"]})
+            if f["countries"]:
+                evidence.append({"source": "Landscape · species", "label": f"{f['label']} ({f['p']*100:.0f}%)", "countries": f["countries"],
+                                 "weight": w, "explain": f["teach"]})
+        log.add("landscape", "Plant / tree species indicators: " + (", ".join(f"{f['label']} {f['p']*100:.0f}%" for f in found) or "none distinctive"),
+                method=f"CLIP prompt-ensemble over {len(ls.SPECIES)} species with mapped native/cultivated ranges",
+                data=[{k: f[k] for k in ("label", "p", "boxes")} for f in found], teach=ls.TEACH["species"],
+                level="success" if found else "muted")
+        # climate
+        pc, _ = eng.option_probs(img_e, [x[2] for x in ls.CLIMATES], "climate")
+        oc = np.argsort(-pc)
+        cl = [{"code": ls.CLIMATES[j][0], "label": ls.CLIMATES[j][1], "p": round(float(pc[j]), 3), "boxes": ls.CLIMATES[j][3]} for j in oc[:3]]
+        land["climate"] = cl
+        if fam not in ("indoor", "portrait") or veg_share > 0.1:
+            for c in cl[:2]:
+                land["factors"].append({"boxes": c["boxes"], "p": min(0.8, c["p"] * 1.2), "label": "Climate " + c["code"], "alpha": 0.7})
+                cs = ls.species_countries(c["boxes"], all_isos)
+                if cs:
+                    evidence.append({"source": "Landscape · climate", "label": f"Köppen {c['code']} {c['label']} ({c['p']*100:.0f}%)",
+                                     "countries": cs, "weight": 0.9 * c["p"], "explain": f"Vegetation and light match a {c['label'].lower()} climate."})
+        log.add("landscape", "Climate class: " + ", ".join(f"{c['code']} {c['label']} {c['p']*100:.0f}%" for c in cl),
+                method="Köppen-style zero-shot classification → latitude/longitude belts", teach=ls.TEACH["climate"], data=[{k: c[k] for k in ("code", "label", "p")} for c in cl])
+        # season → hemisphere
+        ps, _ = eng.option_probs(img_e, [x[2] for x in ls.SEASONS], "season")
+        js = int(np.argmax(ps))
+        season = ls.SEASONS[js][0]
+        land["season"] = {"id": season, "label": ls.SEASONS[js][1], "p": round(float(ps[js]), 3)}
+        month = None
+        dt = meta.get("datetime")
+        if dt:
+            try:
+                month = int(dt["local"][5:7])
+            except Exception:
+                month = None
+        hemi, why = ls.month_hemisphere(season, month) if ps[js] > 0.35 else (None, "")
+        land["hemisphere"] = hemi
+        if hemi:
+            hs = [iso for iso in all_isos if (gz.countries()[iso]["lat"] > 0) == (hemi == "north")]
+            evidence.append({"source": "Landscape · season", "label": f"{hemi.title()}ern hemisphere ({why})", "countries": hs, "weight": 1.0,
+                             "explain": why + "."})
+        log.add("landscape", f"Season: {ls.SEASONS[js][1]} ({ps[js]*100:.0f}%)" + (f" → {hemi}ern hemisphere" if hemi else ""),
+                method="Foliage-state classification × EXIF capture month", detail=why or ("No capture month in metadata." if not month else "Season not decisive."),
+                teach=ls.TEACH["season"], level="success" if hemi else "info")
+        # water / landform (descriptive)
+        pw, _ = eng.option_probs(img_e, [x[2] for x in ls.WATER], "water")
+        pl, _ = eng.option_probs(img_e, [x[2] for x in ls.LANDFORM], "landform")
+        land["water"] = {"label": ls.WATER[int(np.argmax(pw))][1], "p": round(float(pw.max()), 3)}
+        land["landform"] = {"label": ls.LANDFORM[int(np.argmax(pl))][1], "p": round(float(pl.max()), 3)}
+        log.add("landscape", f"Terrain: {land['landform']['label']} · water: {land['water']['label']}",
+                method="Landform & water-body classification",
+                teach="Landform and water type constrain where to look on a map: a wide slow river on a flat plain, a canal, "
+                      "a mountain lake or a coast each match different terrain — useful when browsing satellite imagery.")
+        return land
+
+    def _heat(self, vis, country_post, cands, log) -> dict:
+        land = getattr(self, "_land", {}) or {}
+        city_sim = None
+        if vis:
+            top = sorted(country_post.items(), key=lambda kv: -kv[1])[:3]
+            try:
+                city_sim = self.engine.city_similarity(vis["img_e"], [iso for iso, p in top if p > 0.02])
+            except Exception:
+                city_sim = None
+        with log.timer("landscape", "Region probability heatmap", method="Country posterior × species ranges × climate belts × hemisphere × city similarity over ~15k places",
+                       teach=ls.TEACH["heat"]) as t:
+            heat = ls.region_heat(country_post, land.get("factors", []), land.get("hemisphere"), city_sim)
+            regs = heat["regions"]
+            t.detail = "Top regions: " + ", ".join(f"around {r['name']} ({r['cc']}) {r['p']*100:.0f}%" for r in regs[:5])
+            t.data = regs[:8]
+            precise = any(c["prec"] <= 2 for c in cands)
+            for r in [r for r in regs[:3] if r["p"] >= 0.04]:
+                cands.append({"lat": r["lat"], "lon": r["lon"], "w": (1.5 if precise else 6.0) * r["p"], "prec": 60, "cc": r["cc"],
+                              "source": "Landscape · region model", "label": f"Region around {r['name']} ({r['p']*100:.0f}%)", "city": None})
+            return heat
+        return {"points": [], "regions": []}
 
     def _reasoning(self, loc, countries, evidence, vis, meta, clusters) -> list[str]:
         out = []

@@ -139,13 +139,50 @@ class VisionEngine:
         scale = float(self.model.logit_scale.exp().clamp(max=100))
         return (scale * img_e @ txt_e.T).softmax(dim=-1).cpu().numpy()
 
-    def country_emb(self):
+    def country_emb(self, family: str = "mixed"):
         tmpl = MODELS[self.model_key]["prompt"]
         names = [gz.country_name(i) for i in self.country_isos]
-        a = self.text_emb([tmpl.format(n) for n in names])
-        b = self.text_emb([f"a photo of a place in {n}." for n in names])
-        e = a + b
+        e = self.cached_text([tmpl.format(n) for n in names], "c1") + self.cached_text([f"a photo of a place in {n}." for n in names], "c2")
+        if family in ("natural", "waterside", "arid", "snow", "rural_road"):
+            e = e + self.cached_text([f"a landscape photo of the countryside in {n}." for n in names], "c3") \
+                  + self.cached_text([f"nature and trees in {n}." for n in names], "c4")
+        elif family == "urban":
+            e = e + self.cached_text([f"a street in a city in {n}." for n in names], "c5")
         return e / e.norm(dim=-1, keepdim=True)
+
+    def option_emb(self, prompt_lists: list[list[str]], tag: str):
+        """Prompt ensembling: average the embeddings of several phrasings per option."""
+        flat = [p for pl in prompt_lists for p in pl]
+        e = self.cached_text(flat, tag)
+        out, i = [], 0
+        for pl in prompt_lists:
+            v = e[i:i + len(pl)].mean(0)
+            out.append(v / v.norm())
+            i += len(pl)
+        return self.torch.stack(out)
+
+    def composition(self, img: Image.Image, n: int = 4) -> dict:
+        from .landscape import CELL_LABELS, scene_from_composition
+        w, h = img.size
+        cells, boxes = [], []
+        for r in range(n):
+            for c in range(n):
+                b = (c * w // n, r * h // n, (c + 1) * w // n, (r + 1) * h // n)
+                boxes.append(b)
+                cells.append(img.crop(b))
+        e = self.image_emb(cells)
+        temb = self.option_emb([pl for _, pl in CELL_LABELS], "cells")
+        P = self._probs(e, temb)
+        labels = [k for k, _ in CELL_LABELS]
+        frac = {k: round(float(P[:, i].mean()), 3) for i, k in enumerate(labels)}
+        grid = [[labels[int(np.argmax(P[r * n + c]))] for c in range(n)] for r in range(n)]
+        fam, fam_label = scene_from_composition(frac)
+        return {"fractions": frac, "grid": grid, "family": fam, "family_label": fam_label}
+
+    def option_probs(self, img_e, prompt_lists: list[list[str]], tag: str):
+        P = self._probs(img_e, self.option_emb(prompt_lists, tag))
+        p = 0.5 * P[0] + 0.5 * P[1:].mean(0) if len(P) > 1 else P[0]
+        return p / p.sum(), P
 
     # ------------------------------------------------------------------ views
     @staticmethod
@@ -194,8 +231,20 @@ class VisionEngine:
             t.detail = ", ".join(v["name"] for v in views)
         res["img_e"] = img_e
 
+        # ---- scene composition (grid labelling) → scene family used to gate the probes
+        family = "mixed"
+        with log.timer("landscape", "Scene composition (4×4 grid labelling)", method="CLIP per-cell classification over 13 surface classes",
+                       teach=__import__("geolens.landscape", fromlist=["TEACH"]).TEACH["composition"]) as t:
+            comp = self.composition(img)
+            family = comp["family"]
+            res["composition"] = comp
+            top = sorted(comp["fractions"].items(), key=lambda kv: -kv[1])[:5]
+            t.detail = f"Scene: {comp['family_label']} · " + ", ".join(f"{k} {v*100:.0f}%" for k, v in top)
+            t.data = comp
+        res["family"] = family
+
         # ---- country classification
-        cemb = self.country_emb()
+        cemb = self.country_emb(family)
         P = self._probs(img_e, cemb)  # views x countries
         ent_max = math.log(P.shape[1])
         weights, per_view = [], []
@@ -231,19 +280,26 @@ class VisionEngine:
         probes_out = []
         all_isos = self.country_isos
         for g in PROBES:
-            prompts = [o["prompt"] for o in g["options"]]
-            temb = self.text_emb(prompts)
+            if g["id"] == "scene":
+                continue  # replaced by grid composition
+            prompts = [[o["prompt"]] + o.get("alt", []) for o in g["options"]]
+            temb = self.option_emb(prompts, "probe_" + g["id"])
             gp = self._probs(img_e, temb)  # views x options
             fused = 0.5 * gp[0] + 0.5 * gp[1:].max(0) if len(gp) > 1 else gp[0]
+            # option-level scene gating: e.g. "Desert" only for arid scenes
+            gate = np.array([1.0 if not o.get("scenes") or family in o["scenes"] else 0.05 for o in g["options"]])
+            fused = fused * gate
             fused = fused / fused.sum()
+            applicable = not g.get("scenes") or family in g["scenes"]
             order = np.argsort(-fused)
             k = int(order[0])
             opt = g["options"][k]
             thr = max(0.30, 1.8 / len(g["options"]))
-            detected = bool(fused[k] >= thr)
+            detected = bool(fused[k] >= thr) and applicable
             best_view = int(np.argmax(gp[:, k]))
             entry = {
-                "id": g["id"], "title": g["title"], "teach": g["teach"], "weight": g["weight"],
+                "id": g["id"], "title": g["title"], "teach": g["teach"], "weight": g["weight"] if applicable else 0.0,
+                "applicable": applicable,
                 "detected": detected, "label": opt["label"], "prob": round(float(fused[k]), 3),
                 "explain": opt.get("explain", ""),
                 "countries": sorted(expand(opt.get("countries", []), all_isos)) if opt.get("countries") else [],
@@ -251,7 +307,7 @@ class VisionEngine:
                 "ranking": [[g["options"][j]["label"], round(float(fused[j]), 3)] for j in order[:4]],
             }
             probes_out.append(entry)
-            log.add("clues", f"{g['title']}: {opt['label']}" + ("" if detected else " (weak — ignored)"),
+            log.add("clues", f"{g['title']}: {opt['label']}" + ("" if detected else " (weak — ignored)" if applicable else f" (not applicable to a {family} scene)"),
                     method="CLIP zero-shot probe (%d hypotheses)" % len(g["options"]),
                     detail=f"p={fused[k]:.2f} (threshold {thr:.2f}); strongest in: {views[best_view]['name']}; "
                            + "runner-ups: " + ", ".join(f"{l} {p:.2f}" for l, p in entry["ranking"][1:]),
@@ -259,7 +315,23 @@ class VisionEngine:
                     teach=g["teach"] + (" — " + opt["explain"] if opt.get("explain") else ""),
                     level="info" if detected else "muted")
         res["probes"] = probes_out
+        res["probes"].insert(0, {"id": "scene", "title": "Scene type", "teach": "", "weight": 0.0, "applicable": True,
+                                 "detected": True, "label": res["composition"]["family_label"] if "composition" in res else "Mixed",
+                                 "prob": 1.0, "explain": "", "countries": [], "best_view": "Full image", "best_box": views[0]["box"],
+                                 "ranking": []})
         return res
+
+    def city_similarity(self, img_e, isos: list[str], per_country: int = 120) -> dict:
+        tmpl = MODELS[self.model_key]["prompt"]
+        cands = []
+        for iso in isos:
+            cands += gz.cities_of(iso, per_country)
+        if not cands:
+            return {}
+        e = self.cached_text([tmpl.format(f"{c['name']}, {gz.country_name(c['cc'])}") for c in cands], "cityheat")
+        P = self._probs(img_e, e)
+        p = 0.6 * P[0] + 0.4 * (P[1:].mean(0) if len(P) > 1 else P[0])
+        return {(c["name"], c["cc"]): float(v) for c, v in zip(cands, p)}
 
     # ------------------------------------------------------------------ worldwide landmarks & skylines
     def cached_text(self, prompts: list[str], tag: str):
