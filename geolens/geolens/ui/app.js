@@ -216,6 +216,39 @@ function renderMap(R) {
     const osm = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "© OpenStreetMap contributors", maxZoom: 19 });
     S.layerCtl = L.control.layers({ Map: S.base, Satellite: sat, Streets: osm }, {}, { position: "topright" }).addTo(S.map);
     L.control.scale({ imperial: false }).addTo(S.map);
+    // measure tool + target picking
+    const Measure = L.Control.extend({ options: { position: "topleft" }, onAdd() {
+      const d = L.DomUtil.create("div");
+      d.innerHTML = '<button class="measure-ctl" id="measureBtn" title="Measure distance & bearing">MEASURE</button><div class="measure-out" id="measureOut" hidden></div>';
+      L.DomEvent.disableClickPropagation(d);
+      return d;
+    } });
+    S.map.addControl(new Measure());
+    S.measure = { on: false, pts: [], layer: L.layerGroup().addTo(S.map) };
+    $("#measureBtn").addEventListener("click", () => {
+      S.measure.on = !S.measure.on; S.measure.pts = []; S.measure.layer.clearLayers();
+      $("#measureBtn").classList.toggle("on", S.measure.on); $("#measureOut").hidden = !S.measure.on;
+      $("#measureOut").textContent = "click points on the map";
+    });
+    S.map.on("click", (ev) => {
+      if (S.measure.on) {
+        S.measure.pts.push(ev.latlng);
+        S.measure.layer.clearLayers();
+        const fgc = theme() === "light" ? "#000" : "#fff";
+        L.polyline(S.measure.pts, { color: fgc, weight: 2, dashArray: "6 4" }).addTo(S.measure.layer);
+        S.measure.pts.forEach((p) => L.circleMarker(p, { radius: 3, color: fgc }).addTo(S.measure.layer));
+        let d = 0; for (let i = 1; i < S.measure.pts.length; i++) d += S.measure.pts[i - 1].distanceTo(S.measure.pts[i]);
+        const a = S.measure.pts[S.measure.pts.length - 2], b = S.measure.pts[S.measure.pts.length - 1];
+        let brg = "";
+        if (a) { const y = Math.sin((b.lng - a.lng) * Math.PI / 180) * Math.cos(b.lat * Math.PI / 180), x = Math.cos(a.lat * Math.PI / 180) * Math.sin(b.lat * Math.PI / 180) - Math.sin(a.lat * Math.PI / 180) * Math.cos(b.lat * Math.PI / 180) * Math.cos((b.lng - a.lng) * Math.PI / 180); brg = ` · bearing ${((Math.atan2(y, x) * 180 / Math.PI + 360) % 360).toFixed(0)}°`; }
+        $("#measureOut").textContent = (d >= 1000 ? (d / 1000).toFixed(2) + " km" : d.toFixed(0) + " m") + brg;
+        return;
+      }
+      S.toolPoint = { lat: ev.latlng.lat, lon: ev.latlng.lng };
+      if (S.toolMarker) S.map.removeLayer(S.toolMarker);
+      S.toolMarker = L.circleMarker(ev.latlng, { radius: 6, color: "#e0b54a", weight: 2, fillOpacity: 0.3 }).addTo(S.map).bindTooltip("Tool target");
+      if (S.result) renderTools(S.result);
+    });
     S.layers.heat = L.layerGroup().addTo(S.map);
     S.layers.ranges = L.layerGroup();
     S.layers.main = L.layerGroup().addTo(S.map);
@@ -311,6 +344,7 @@ function renderTabs(R) {
   pane("text").innerHTML = h;
 
   renderLand(R);
+  renderTools(R);
   renderReverse(R);
   renderPrep(R);
   renderSun(R);
@@ -356,6 +390,43 @@ function renderLand(R) {
   }
   if (!h) h = `<p class="muted">Landscape recon needs the vision model.</p>`;
   $(`.tabpane[data-pane="land"]`).innerHTML = h;
+}
+
+function toolCtx() {
+  const R = S.result, L = R.location, p = S.toolPoint || { lat: L.lat, lon: L.lon };
+  const dt = (R.meta.datetime && R.meta.datetime.local) || new Date().toISOString().slice(0, 19);
+  const sel = (window.getSelection && String(window.getSelection())).trim();
+  return { lat: p.lat, lon: p.lon, q: sel || S.toolQuery || "", date: dt.slice(0, 10).replace(/-/g, "."), time: dt.slice(11, 16) };
+}
+function renderTools(R) {
+  const ctx = toolCtx();
+  let h = `<div class="toolctx"><span class="kicker">TARGET</span><code>${ctx.lat.toFixed(5)}, ${ctx.lon.toFixed(5)}</code>
+    <span class="muted">${S.toolPoint ? "picked on map" : "estimated pin"} — click the map to target another point${S.toolQuery ? ` · text: “${esc(S.toolQuery)}”` : ""}</span>
+    ${S.toolPoint ? '<button class="chipbtn" id="toolReset">USE PIN</button>' : ""}</div>`;
+  const fc = R.focus_crops || [];
+  if (fc.length) {
+    h += "<h4>Investigate your focus crops</h4>";
+    for (const f of fc) {
+      h += `<div class="fcrop"><img src="${f.src}" alt=""><div><b>FOCUS #${f.index + 1}</b>
+        <div class="small muted">${f.text.length ? "Text: " + f.text.map((t) => "“" + esc(t) + "”").join(", ") : "No text read in this crop."}</div>
+        <div class="btnrow">${[["yandex", "YANDEX"], ["lens", "LENS"], ["bing", "BING"], ["tineye", "TINEYE"]].map(([k, n]) => `<button class="chipbtn" data-rev="${k}" data-focus="${f.index}">${n} ↗</button>`).join("")}
+        ${f.text.slice(0, 3).map((t) => `<button class="chipbtn" data-open="https://www.google.com/search?q=${encodeURIComponent('"' + t + '"')}">SEARCH “${esc(t.slice(0, 18))}”</button><button class="chipbtn" data-open="https://www.google.com/maps/search/${encodeURIComponent(t)}/@${ctx.lat},${ctx.lon},12z">MAPS</button><button class="chipbtn" data-open="https://translate.google.com/?sl=auto&tl=en&text=${encodeURIComponent(t)}">TRANSLATE</button>`).join("")}</div>
+        <div class="small muted">Reverse-search just this crop (no face, no clutter). For plants: Pl@ntNet; for mountains: PeakVisor; for text: Translate.</div></div></div>`;
+    }
+  } else h += `<p class="small muted">Tip: use FOCUS on the image (or semi-manual mode) to cut out a detail — it will appear here with its own investigation buttons.</p>`;
+  for (const g of TOOLKIT) {
+    h += `<h4>${esc(g.cat)}</h4><div class="tools-grid">`;
+    for (const [name, tpl, guide] of g.items) {
+      if (tpl === "OVERPASS") {
+        h += `<div class="tool"><b>${esc(name)}</b><p>${esc(guide)}</p><div class="row2"><select id="ovpSel">${Object.keys(OVERPASS).map((k) => `<option>${esc(k)}</option>`).join("")}</select><button class="chipbtn" id="ovpGo">RUN ↗</button></div></div>`;
+      } else {
+        h += `<div class="tool"><b>${esc(name)}</b><p>${esc(guide)}</p><div class="row2"><button class="chipbtn" data-open="${esc(fillTool(tpl, ctx))}">OPEN ↗</button></div></div>`;
+      }
+    }
+    h += `</div>`;
+  }
+  h += `<div class="teach">Workflow used by professional analysts: (1) narrow the region with the automatic result and heatmap, (2) list candidate features with Overpass (bridges, towers, tree rows), (3) verify each candidate on satellite and street-level imagery, (4) confirm with the horizon (PeakFinder/Earth 3D) and the sun (SunCalc), (5) date it with Wayback and weather history.</div>`;
+  $(`.tabpane[data-pane="tools"]`).innerHTML = h;
 }
 
 function renderReverse(R) {
@@ -594,16 +665,23 @@ document.addEventListener("DOMContentLoaded", () => {
   document.body.addEventListener("click", async (e) => {
     const fly = e.target.closest("[data-fly]"); if (fly) { const [a, b] = fly.dataset.fly.split(",").map(Number); S.map.flyTo([a, b], 9); return; }
     const o = e.target.closest("[data-open]"); if (o) { e.preventDefault(); e.stopPropagation(); openExternal(o.dataset.open); return; }
-    const s = e.target.closest("[data-search]"); if (s) { openExternal("https://www.google.com/search?q=" + encodeURIComponent(s.dataset.search)); return; }
+    const s = e.target.closest("[data-search]"); if (s) { S.toolQuery = s.dataset.search; openExternal("https://www.google.com/search?q=" + encodeURIComponent(s.dataset.search)); return; }
     const r = e.target.closest("[data-rev]");
     if (r) {
       toast("Uploading to " + r.textContent.replace(" ↗", "") + "…");
-      const res = await api("/api/reverse/" + r.dataset.rev, { job: S.job, open: true });
+      const res = await api("/api/reverse/" + r.dataset.rev, { job: S.job, open: true, focus: r.dataset.focus != null ? +r.dataset.focus : null });
       if (res.error) { toast(res.error.slice(0, 120) + " — opened manual page", 4000); if (res.url) openExternal(res.url); }
       addClientLog("reverse", "Manual reverse search: " + r.dataset.rev, "Web upload, no API key", res.error || res.url);
       return;
     }
     const id = e.target.id;
+    if (id === "ovpGo") {
+      const c = toolCtx();
+      openExternal(overpassURL(OVERPASS[$("#ovpSel").value]) + `&C=${c.lat.toFixed(5)};${c.lon.toFixed(5)};13`);
+      addClientLog("tools", "Overpass query: " + $("#ovpSel").value, "OpenStreetMap feature search (Overpass Turbo)", `around ${c.lat.toFixed(4)}, ${c.lon.toFixed(4)}`);
+      return;
+    }
+    if (id === "toolReset") { S.toolPoint = null; if (S.toolMarker) { S.map.removeLayer(S.toolMarker); S.toolMarker = null; } renderTools(S.result); return; }
     if (id === "sunLocus") sunLocus();
     if (id === "sunChrono") sunChrono();
     if (id === "sunClear") { S.layers.sun.clearLayers(); $("#sunOut").textContent = ""; }

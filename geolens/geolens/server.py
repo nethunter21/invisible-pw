@@ -66,6 +66,7 @@ def _run_job(job_id: str):
             an = Analyzer(STATE.engine, STATE.settings)
             job["result"] = an.run(job["bytes"], job["name"], log, focus=job.get("focus"), focus_space=job.get("focus_space", "original"))
             job["search_img"] = an.search_image
+            job["focus_crops"] = an.focus_crops
     except Exception as e:
         job["error"] = f"{type(e).__name__}: {e}"
         log.add("error", "Analysis failed", detail=traceback.format_exc(), level="error")
@@ -191,7 +192,11 @@ class Handler(BaseHTTPRequestHandler):
                 job = STATE.jobs.get(b.get("job", ""))
                 if engine not in rev.ENGINES or not job:
                     return self._json({"error": "unknown engine or job"}, 400)
-                img = job.get("search_img") or Image.open(io.BytesIO(job["bytes"])).convert("RGB")
+                fi = b.get("focus")
+                if fi is not None and job.get("focus_crops") and 0 <= int(fi) < len(job["focus_crops"]):
+                    img = job["focus_crops"][int(fi)]
+                else:
+                    img = job.get("search_img") or Image.open(io.BytesIO(job["bytes"])).convert("RGB")
                 try:
                     res = rev.ENGINES[engine](img)
                 except Exception as e:

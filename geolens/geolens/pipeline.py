@@ -76,6 +76,7 @@ class Analyzer:
         self.engine = engine
         self.search_image = None
         self._land: dict = {}
+        self.focus_crops: list = []
         self.settings = dict(DEFAULT_SETTINGS, **(settings or {}))
 
     # ======================================================================= run
@@ -155,6 +156,7 @@ class Analyzer:
                                      "up-scaled, read, classified and reverse-searched on its own, and its evidence is "
                                      "weighted above the rest of the frame.") as t:
                     crop = img.crop(tuple(int(v * fx) for v in fb))
+                    self.focus_crops.append(crop)
                     items = ocr_mod.run_ocr_robust(crop) if S["ocr"] else []
                     sc = (fb[2] - fb[0]) / crop.size[0]
                     for it in items:
@@ -164,6 +166,8 @@ class Analyzer:
                     ocr_items += [i for i in items if not any(i["text"].lower() == o["text"].lower() for o in ocr_items)]
                     t.detail = f"Box {fb} · {len(items)} text region(s)" + (": " + " | ".join(i["text"] for i in items[:8]) if items else "")
                     t.data = {"box": fb, "text": [i["text"] for i in items]}
+                    out.setdefault("focus_crops", []).append({"index": k - 1, "box": fb, "src": _b64(crop, 600, 82),
+                                                              "text": [i["text"] for i in items]})
 
         # ------------------------------------------------------------ 3. people
         log.set_stage("Detecting people", 0.14)
@@ -203,6 +207,10 @@ class Analyzer:
             if vis:
                 all_isos = self.engine.country_isos
                 out["visual_top"] = [k for k, _ in sorted(vis["country_probs"].items(), key=lambda kv: -kv[1])[:5]]
+                for g in (vis.get("geocells") or [])[:6]:
+                    if g["p"] >= 0.03:
+                        cands.append({"lat": g["lat"], "lon": g["lon"], "w": 4.0 * g["p"], "prec": 40, "cc": g["cc"],
+                                      "source": "Vision · geocells", "city": g["name"], "label": f"Looks like {g['name']} area ({g['p']*100:.0f}%)"})
                 log.set_stage("Matching landmarks & skylines worldwide", 0.36)
                 with log.timer("vision", "World landmark pass finished", method="CLIP zero-shot"):
                     world = self.engine.world_places(vis["img_e"], log, night=out["stats"]["night"],
@@ -470,10 +478,10 @@ class Analyzer:
             for p in vis["probes"]:
                 if p["detected"] and p["countries"] and p["weight"] > 0:
                     evidence.append({"source": "Visual clue", "label": f"{p['title']}: {p['label']}", "countries": p["countries"],
-                                     "weight": p["weight"] * p["prob"], "explain": p["explain"] or p["teach"].split(". ")[0] + "."})
+                                     "weight": 0.5 * p["weight"] * p["prob"], "explain": p["explain"] or p["teach"].split(". ")[0] + "."})
 
         def posterior(ev):
-            logp = np.log(prior + 1e-9) * (0.8 if vis else 1.0)
+            logp = np.log(prior + 1e-9)  # benchmark: the visual prior deserves full weight
             for e in ev:
                 for c in e["countries"]:
                     if c in idx:
@@ -679,7 +687,10 @@ class Analyzer:
             try:
                 city_sim = self.engine.city_similarity(vis["img_e"], [iso for iso, p in top if p > 0.02])
             except Exception:
-                city_sim = None
+                city_sim = {}
+            for g in vis.get("geocells") or []:  # worldwide city evidence lifts regions outside the top countries too
+                key = (g["name"], g["cc"])
+                city_sim[key] = max(city_sim.get(key, 0.0), g["p"])
         with log.timer("landscape", "Region probability heatmap", method="Country posterior × species ranges × climate belts × hemisphere × city similarity over ~15k places",
                        teach=ls.TEACH["heat"]) as t:
             heat = ls.region_heat(country_post, land.get("factors", []), land.get("hemisphere"), city_sim)

@@ -6,6 +6,15 @@ It needs **no API keys and no accounts**. Everything except the optional web loo
 
 ![layout](assets/geolens.png)
 
+## What's new in v2.2: geocells, benchmark tuning, investigation toolkit
+
+- **Geocell classifier.** About 2,600 cities worldwide are scored zero-shot and their probabilities are summed per country. That is fused with the direct country score, and the top cities feed the heatmap and the pin.
+- **Mirrored-view averaging.** The full image is also scored mirrored and the two results are averaged.
+- **Benchmark-driven tuning.** On 39 blind landscape photos, StreetCLIP's own prompt beat a multi-prompt ensemble (48.7% vs 43.6% country top-1). The pipeline now uses the native prompt, gives the whole frame 80% of the weight, and halves the weight of weak visual-clue families.
+- **Investigation toolkit (TOOLS tab).** 45 professional tools in 9 categories: street-level imagery, satellite and historical imagery, OSM/Overpass feature search (14 ready-made queries), terrain and horizon matching, sun and weather, nearby photos, manual reverse search, translation and identification guides, forensics. Each opens on the current pin (or any point you click on the map) and has a short how-to.
+- **Focus-crop investigation.** After a crop scan, each crop gets its own Yandex/Lens/Bing/TinEye upload plus text search, maps and translate buttons.
+- **Map measure tool.** Distance and bearing between clicked points.
+
 ## What's new in v2.1 — landscape & low-information recon
 
 For photos with no text and no landmark (a riverbank, a forest road, a field), GeoLens now reasons like a human analyst:

@@ -236,3 +236,19 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 .selbox b{position:absolute;right:-1px;top:-1px;background:#000;color:#fff;border:1px solid #fff;font:700 11px Consolas,monospace;width:16px;height:16px;line-height:14px;text-align:center;cursor:pointer}
 .sel-list{margin-top:8px}
 .stage.selecting{cursor:crosshair}
+
+/* toolkit */
+.toolctx{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 10px;border:1px solid var(--line);border-radius:6px;margin-bottom:10px;font-size:12px}
+.toolctx code{font-size:12px}
+.tools-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px}
+.tool{border:1px solid var(--line);border-radius:6px;padding:9px 10px;display:flex;flex-direction:column;gap:6px}
+.tool b{font-size:13px;color:var(--fg)}
+.tool p{margin:0;font-size:11.8px;color:var(--muted);line-height:1.45;flex:1}
+.tool .row2{display:flex;gap:6px;align-items:center}
+.tool select{flex:1;height:24px;background:var(--panel2);border:1px solid var(--line2);border-radius:4px;font-size:11.5px}
+.fcrop{display:grid;grid-template-columns:150px 1fr;gap:10px;border:1px solid var(--line);border-radius:6px;padding:8px;margin-bottom:8px}
+.fcrop img{width:150px;border-radius:4px;display:block}
+.measure-ctl{background:var(--panel)!important;color:var(--text)!important;border:1px solid var(--line2)!important;border-radius:4px;padding:4px 8px;
+  font:600 10.5px Consolas,monospace;letter-spacing:.08em;cursor:pointer}
+.measure-ctl.on{background:var(--fg)!important;color:var(--inv)!important}
+.measure-out{background:var(--panel)!important;color:var(--text)!important;border:1px solid var(--line2);border-radius:4px;padding:4px 8px;font:11.5px Consolas,monospace}
