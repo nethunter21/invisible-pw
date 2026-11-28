@@ -512,8 +512,12 @@ class Analyzer:
         clusters.sort(key=lambda c: -c["score"])
         total = sum(c["score"] for c in clusters) or 1
         best = clusters[0] if clusters else None
-        if best:  # the winning area feeds back into the country decision
-            cc_best = Counter(m["cc"] for m in best["members"] if m["cc"]).most_common(1)
+        # The winning area feeds back into the country decision ONLY when it contains hard, non-visual evidence
+        # (sign text, geocodes, reverse-search venues, GPS). Benchmark round 4: letting purely visual candidates
+        # (geocells, heat regions) vote again double-counted the vision model and flipped correct countries.
+        hard = best and any(m["prec"] <= 2 and not m["source"].startswith(("Vision", "Landscape")) for m in best["members"])
+        if hard:
+            cc_best = Counter(m["cc"] for m in best["members"] if m["cc"] and not m["source"].startswith(("Vision", "Landscape"))).most_common(1)
             if cc_best:
                 share = best["score"] / total
                 evidence.append({"source": "Spatial agreement", "label": f"{len(best['members'])} location clue(s) agree ({', '.join(best['sources'])})",
