@@ -64,7 +64,7 @@ def _run_job(job_id: str):
     try:
         with STATE.run_lock:
             an = Analyzer(STATE.engine, STATE.settings)
-            job["result"] = an.run(job["bytes"], job["name"], log)
+            job["result"] = an.run(job["bytes"], job["name"], log, focus=job.get("focus"), focus_space=job.get("focus_space", "original"))
             job["search_img"] = an.search_image
     except Exception as e:
         job["error"] = f"{type(e).__name__}: {e}"
@@ -145,8 +145,13 @@ class Handler(BaseHTTPRequestHandler):
                 data = self._body()
                 Image.open(io.BytesIO(data)).verify()
                 jid = uuid.uuid4().hex[:12]
+                try:
+                    focus = json.loads(q.get("focus", ["[]"])[0])
+                except Exception:
+                    focus = []
                 STATE.jobs[jid] = {"bytes": data, "name": q.get("name", ["image"])[0], "log": AnalysisLog(),
-                                   "done": False, "created": datetime.now().isoformat()}
+                                   "done": False, "created": datetime.now().isoformat(), "focus": focus,
+                                   "focus_space": q.get("space", ["original"])[0]}
                 for old in list(STATE.jobs)[:-8]:  # keep memory bounded
                     STATE.jobs.pop(old, None)
                 threading.Thread(target=_run_job, args=(jid,), daemon=True).start()

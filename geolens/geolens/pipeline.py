@@ -35,7 +35,7 @@ from .knowledge import PROBES
 from .log import AnalysisLog
 
 DEFAULT_SETTINGS = {"model": "streetclip", "online": True, "reverse_auto": True, "ocr": True,
-                    "attention": True, "geocode_ocr": True, "lens_auto": True}
+                    "attention": True, "geocode_ocr": True, "lens_auto": True, "semi_manual": False}
 
 OCR_TEACH = {
     "phone": "Dialling prefixes are assigned per country by the ITU.",
@@ -79,7 +79,8 @@ class Analyzer:
         self.settings = dict(DEFAULT_SETTINGS, **(settings or {}))
 
     # ======================================================================= run
-    def run(self, data: bytes, filename: str, log: AnalysisLog) -> dict[str, Any]:
+    def run(self, data: bytes, filename: str, log: AnalysisLog, focus: list | None = None,
+            focus_space: str = "original") -> dict[str, Any]:
         S = self.settings
         out: dict[str, Any] = {"filename": filename, "started": datetime.now(timezone.utc).isoformat()}
         evidence: list[dict] = []
@@ -130,6 +131,40 @@ class Analyzer:
         out["image"] = {"w": img.size[0], "h": img.size[1], "work_w": work.size[0], "work_h": work.size[1],
                         "bytes": len(data), "src": _b64(work)}
 
+        # ------------------------------------------------------------ 2b. semi-manual focus regions
+        focus_boxes: list[list[int]] = []
+        for b in (focus or [])[:6]:
+            try:
+                x0, y0, x1, y1 = (min(1.0, max(0.0, float(v))) for v in b)
+            except Exception:
+                continue
+            if prep.get("mirrored") and focus_space == "original":
+                x0, x1 = 1 - x1, 1 - x0
+            if x1 - x0 < 0.01 or y1 - y0 < 0.01:
+                continue
+            focus_boxes.append([int(x0 * work.size[0]), int(y0 * work.size[1]), int(x1 * work.size[0]), int(y1 * work.size[1])])
+        out["focus"] = focus_boxes
+        if focus_boxes:
+            log.set_stage("Deep scan of selected regions", 0.12)
+            fx = img.size[0] / work.size[0]
+            for k, fb in enumerate(focus_boxes, 1):
+                with log.timer("focus", f"Focus region #{k}: high-resolution deep scan",
+                               method="Full-resolution crop ×(up-scaling) → OCR · vision views ×3 weight · dedicated reverse searches",
+                               teach="Semi-manual mode: the analyst points at the decisive detail (a sign, a building, a "
+                                     "mountain ridge, a tree line). That crop is taken from the full-resolution original, "
+                                     "up-scaled, read, classified and reverse-searched on its own, and its evidence is "
+                                     "weighted above the rest of the frame.") as t:
+                    crop = img.crop(tuple(int(v * fx) for v in fb))
+                    items = ocr_mod.run_ocr_robust(crop) if S["ocr"] else []
+                    sc = (fb[2] - fb[0]) / crop.size[0]
+                    for it in items:
+                        bx = it["box"]
+                        it["box"] = [int(fb[0] + bx[0] * sc), int(fb[1] + bx[1] * sc), int(fb[0] + bx[2] * sc), int(fb[1] + bx[3] * sc)]
+                        it["focus"] = k
+                    ocr_items += [i for i in items if not any(i["text"].lower() == o["text"].lower() for o in ocr_items)]
+                    t.detail = f"Box {fb} · {len(items)} text region(s)" + (": " + " | ".join(i["text"] for i in items[:8]) if items else "")
+                    t.data = {"box": fb, "text": [i["text"] for i in items]}
+
         # ------------------------------------------------------------ 3. people
         log.set_stage("Detecting people", 0.14)
         persons = {"faces": [], "persons": [], "area": 0.0}
@@ -161,13 +196,16 @@ class Analyzer:
                         detail=self.engine.error or "", level="warn")
         if self.engine is not None and self.engine.ready:
             log.set_stage("Visual geolocation", 0.24)
-            with log.timer("vision", "Vision analysis complete", method="StreetCLIP on person-masked image + scene crops"):
-                vis = self.engine.analyze(masked, log, extra_views=bg_boxes)
+            focus_views = [(f"Focus #{k}", b, 3.0) for k, b in enumerate(focus_boxes, 1)]
+            with log.timer("vision", "Vision analysis complete", method="StreetCLIP on person-masked image + scene crops"
+                           + (" + focus regions" if focus_views else "")):
+                vis = self.engine.analyze(masked, log, extra_views=focus_views + list(bg_boxes))
             if vis:
                 all_isos = self.engine.country_isos
                 log.set_stage("Matching landmarks & skylines worldwide", 0.36)
                 with log.timer("vision", "World landmark pass finished", method="CLIP zero-shot"):
-                    world = self.engine.world_places(vis["img_e"], log, night=out["stats"]["night"])
+                    world = self.engine.world_places(vis["img_e"], log, night=out["stats"]["night"],
+                                                     focus_idx=list(range(1, 1 + len(focus_boxes))))
                 for w_ in world[:10]:
                     if w_["p"] < 0.03:
                         continue
@@ -218,7 +256,7 @@ class Analyzer:
             log.set_stage("Reverse image search (Yandex ×N, Lens, TinEye) + geocoding", 0.45)
             geo_queries = self._geo_queries(ocr_items, ocr_clues) if S["geocode_ocr"] else []
             with ThreadPoolExecutor(max_workers=2) as ex:
-                f_rev = ex.submit(self._reverse, original, masked, work, bg_boxes, ocr_items, persons, log) if S["reverse_auto"] else None
+                f_rev = ex.submit(self._reverse, original, masked, work, bg_boxes, ocr_items, persons, log, focus_boxes, img) if S["reverse_auto"] else None
                 f_geo = ex.submit(self._geocode, geo_queries, log) if geo_queries else None
                 if f_rev:
                     reverse_out = f_rev.result() or reverse_out
@@ -316,9 +354,17 @@ class Analyzer:
                 out += hits
         return out
 
-    def _reverse(self, original, masked, work, bg_boxes, ocr_items, persons, log) -> dict:
+    def _reverse(self, original, masked, work, bg_boxes, ocr_items, persons, log, focus_boxes=(), full=None) -> dict:
         S = self.settings
         queries: list[tuple[str, Image.Image]] = []
+        fx = (full.size[0] / work.size[0]) if full is not None else 1.0
+        for k, fb in enumerate(focus_boxes, 1):
+            src = full if full is not None else work
+            crop = src.crop(tuple(int(v * fx) for v in fb))
+            if max(crop.size) < 700:
+                f = 700 / max(crop.size)
+                crop = crop.resize((int(crop.size[0] * f), int(crop.size[1] * f)), Image.LANCZOS)
+            queries.append((f"Focus #{k}", crop))
         if persons["faces"]:
             queries.append(("Person-masked image", masked))
             for n, b in sorted(bg_boxes, key=lambda nb: -(nb[1][2] - nb[1][0]) * (nb[1][3] - nb[1][1]))[:4]:
@@ -357,6 +403,8 @@ class Analyzer:
         extra = []
         if S.get("lens_auto"):
             extra.append((queries[0][0], queries[0][1], "lens"))
+            for label, im in queries[1:len(focus_boxes)]:
+                extra.append((label, im, "lens"))
         extra.append(("Original upload", original, "tineye"))
         for label, im, e in extra:
             runs += rev.multi_search([(label, im)], engines=(e,), workers=1, on_done=done)

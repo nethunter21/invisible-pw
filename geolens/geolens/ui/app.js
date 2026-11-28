@@ -18,6 +18,7 @@ const S = { job: null, result: null, log: [], map: null, layers: {}, base: null,
 async function pollStatus() {
   try {
     const s = await api("/api/status");
+    SEMI = !!s.settings.semi_manual;
     const pill = $("#modelPill"), m = s.model;
     pill.className = "status";
     let txt = "VISION OFF";
@@ -35,16 +36,78 @@ async function pollStatus() {
 }
 
 /* ---------------------------------------------------------------- flow */
-function show(id) { for (const s of ["landing", "loading", "result"]) $("#" + s).hidden = s !== id; }
+function show(id) { for (const s of ["landing", "select", "loading", "result"]) $("#" + s).hidden = s !== id; }
 
-async function analyze(file) {
+/* ---------------------------------------------------------------- semi-manual selection */
+const SEL = { boxes: [], drag: null, host: null, img: null, layer: null };
+function imgRect(img) {  // displayed image rect (object-fit contain aware)
+  const r = img.getBoundingClientRect(), nw = img.naturalWidth, nh = img.naturalHeight;
+  const sc = Math.min(r.width / nw, r.height / nh), w = nw * sc, h = nh * sc;
+  return { left: r.left + (r.width - w) / 2, top: r.top + (r.height - h) / 2, width: w, height: h, offX: (r.width - w) / 2, offY: (r.height - h) / 2 };
+}
+function drawSel() {
+  const ir = imgRect(SEL.img);
+  SEL.layer.innerHTML = SEL.boxes.map((b, i) => `<div class="selbox" style="left:${ir.offX + b[0] * ir.width}px;top:${ir.offY + b[1] * ir.height}px;width:${(b[2] - b[0]) * ir.width}px;height:${(b[3] - b[1]) * ir.height}px"><span>FOCUS #${i + 1}</span><b data-del="${i}">×</b></div>`).join("");
+  const list = $("#selList");
+  if (list) list.textContent = SEL.boxes.length ? `${SEL.boxes.length} region(s) selected — each gets a deep scan.` : "No region selected yet — drag on the image.";
+  $("#rescanBtn").hidden = !(SEL.host === $("#stage") && SEL.boxes.length);
+}
+function bindSelect(host, img, layer) {
+  SEL.host = host; SEL.img = img; SEL.layer = layer; SEL.boxes = [];
+  drawSel();
+}
+function selDown(e) {
+  if (!SEL.host || !SEL.host.contains(e.target)) return;
+  if (SEL.host === $("#stage") && !$("#stage").classList.contains("selecting")) return;
+  const d = e.target.closest("[data-del]"); if (d) { SEL.boxes.splice(+d.dataset.del, 1); drawSel(); return; }
+  const ir = imgRect(SEL.img);
+  const x = (e.clientX - ir.left) / ir.width, y = (e.clientY - ir.top) / ir.height;
+  if (x < 0 || y < 0 || x > 1 || y > 1) return;
+  e.preventDefault();
+  SEL.drag = { x, y }; SEL.boxes.push([x, y, x, y]);
+}
+function selMove(e) {
+  if (!SEL.drag) return;
+  const ir = imgRect(SEL.img);
+  const x = Math.min(1, Math.max(0, (e.clientX - ir.left) / ir.width)), y = Math.min(1, Math.max(0, (e.clientY - ir.top) / ir.height));
+  const b = SEL.boxes[SEL.boxes.length - 1];
+  b[0] = Math.min(SEL.drag.x, x); b[1] = Math.min(SEL.drag.y, y); b[2] = Math.max(SEL.drag.x, x); b[3] = Math.max(SEL.drag.y, y);
+  drawSel();
+}
+function selUp() {
+  if (!SEL.drag) return;
+  SEL.drag = null;
+  const b = SEL.boxes[SEL.boxes.length - 1];
+  if (b[2] - b[0] < 0.015 || b[3] - b[1] < 0.015) SEL.boxes.pop();
+  drawSel();
+}
+function startSelect(file) {
+  $("#selImg").src = URL.createObjectURL(file);
+  show("select");
+  bindSelect($("#selStage"), $("#selImg"), $("#selBoxes"));
+}
+function startFocusOnResult() {
+  const st = $("#stage");
+  if (st.classList.toggle("selecting")) {
+    setOverlay("none");
+    if (!$("#viewBoxes")) st.insertAdjacentHTML("beforeend", '<div id="viewBoxes"></div>');
+    bindSelect(st, $("#photo"), $("#viewBoxes"));
+    $("#viewerHint").textContent = "Drag boxes around the details to deep-scan, then press RE-SCAN.";
+  } else { SEL.boxes = []; drawSel(); $("#viewerHint").textContent = ""; }
+}
+
+let SEMI = false;
+async function analyze(file, focus, space) {
   if (!file || !file.type.startsWith("image/")) return toast("Please choose an image file");
+  S.file = file;
+  if (SEMI && focus === undefined) return startSelect(file);
   const buf = await file.arrayBuffer();
   $("#loadImg").src = URL.createObjectURL(file);
   $("#liveSteps").innerHTML = ""; $("#loadBar").style.width = "1%"; $("#loadStage").textContent = "Uploading"; $("#loadPct").textContent = "0%";
   show("loading");
   $("#logBtn").disabled = false; S.log = []; updateLogCount();
-  const r = await api("/api/analyze?name=" + encodeURIComponent(file.name || "pasted.png"), buf, true);
+  const q = (focus && focus.length) ? `&focus=${encodeURIComponent(JSON.stringify(focus))}&space=${space || "original"}` : "";
+  const r = await api("/api/analyze?name=" + encodeURIComponent(file.name || "pasted.png") + q, buf, true);
   if (r.error) { toast(r.error); show("landing"); return; }
   S.job = r.job;
   poll(0);
@@ -132,6 +195,8 @@ function setOverlay(ov) {
     }
     hint.textContent = `${items.length} text region(s): ` + items.slice(0, 8).map((i) => `“${i.text}”`).join(", ");
   }
+  for (const [i, b] of (R.focus || []).entries())
+    svg.insertAdjacentHTML("beforeend", `<rect x="${b[0]}" y="${b[1]}" width="${b[2] - b[0]}" height="${b[3] - b[1]}" fill="none" stroke="#fff" stroke-width="3" stroke-dasharray="10 5"/>` + label(b[0] + 4, b[1] + 18, "FOCUS #" + (i + 1), 16));
   drawMeasure();
 }
 
@@ -390,7 +455,7 @@ function startMeasure() {
   $("#viewerHint").textContent = "Click the BASE of a vertical object, then its TOP, then the TIP of its shadow.";
 }
 function stageClick(ev) {
-  if (!S.measuring || S.measuring.done) return;
+  if (!S.measuring || S.measuring.done || $("#stage").classList.contains("selecting")) return;
   const r = $("#photo").getBoundingClientRect(), W = S.result.image.work_w, H = S.result.image.work_h;
   const sc = Math.min(r.width / W, r.height / H), ox = (r.width - W * sc) / 2, oy = (r.height - H * sc) / 2;
   S.measuring.pts.push([(ev.clientX - r.left - ox) / sc, (ev.clientY - r.top - oy) / sc]);
@@ -481,6 +546,7 @@ function exportJSON() {
 async function openSettings() {
   const s = await api("/api/status");
   $("#setModel").innerHTML = Object.entries(s.models).map(([k, v]) => `<option value="${esc(k)}" ${k === s.settings.model ? "selected" : ""}>${esc(v)}</option>`).join("");
+  $("#setSemi").checked = !!s.settings.semi_manual;
   $("#setOnline").checked = s.settings.online; $("#setReverse").checked = s.settings.reverse_auto; $("#setLens").checked = s.settings.lens_auto !== false;
   $("#setGeocode").checked = s.settings.geocode_ocr; $("#setOcr").checked = s.settings.ocr; $("#setAttn").checked = s.settings.attention;
   $("#settings").showModal();
@@ -507,10 +573,20 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#themeBtn").addEventListener("click", () => setTheme(theme() === "dark" ? "light" : "dark"));
   $("#settingsBtn").addEventListener("click", openSettings);
   $("#setSave").addEventListener("click", () => api("/api/settings", {
-    model: $("#setModel").value, online: $("#setOnline").checked, reverse_auto: $("#setReverse").checked, lens_auto: $("#setLens").checked,
+    model: $("#setModel").value, semi_manual: $("#setSemi").checked, online: $("#setOnline").checked, reverse_auto: $("#setReverse").checked, lens_auto: $("#setLens").checked,
     geocode_ocr: $("#setGeocode").checked, ocr: $("#setOcr").checked, attention: $("#setAttn").checked,
-  }).then(() => { toast("Settings saved"); pollStatus(); }));
+  }).then((r) => { SEMI = !!(r.settings && r.settings.semi_manual); toast("Settings saved"); pollStatus(); }));
   $("#shadowBtn").addEventListener("click", startMeasure);
+  document.addEventListener("mousedown", selDown);
+  document.addEventListener("mousemove", selMove);
+  document.addEventListener("mouseup", selUp);
+  window.addEventListener("resize", () => SEL.img && drawSel());
+  $("#selGo").addEventListener("click", () => { if (!SEL.boxes.length) return toast("Drag at least one box, or press Whole image"); analyze(S.file, SEL.boxes.map((b) => b.slice()), "original"); });
+  $("#selWhole").addEventListener("click", () => analyze(S.file, [], "original"));
+  $("#selClear").addEventListener("click", () => { SEL.boxes = []; drawSel(); });
+  $("#selCancel").addEventListener("click", () => { show("landing"); $("#file").value = ""; });
+  $("#focusBtn").addEventListener("click", startFocusOnResult);
+  $("#rescanBtn").addEventListener("click", () => { const f = SEL.boxes.map((b) => b.slice()); $("#stage").classList.remove("selecting"); $("#viewBoxes") && ($("#viewBoxes").innerHTML = ""); $("#rescanBtn").hidden = true; analyze(S.file, f, "display"); });
   $("#stage").addEventListener("click", stageClick);
   $("#copyBtn").addEventListener("click", () => { const L = S.result.location; navigator.clipboard.writeText(`${L.lat}, ${L.lon}`); toast("Coordinates copied"); });
   $("#gmapsBtn").addEventListener("click", () => { const L = S.result.location; openExternal(`https://www.google.com/maps/search/?api=1&query=${L.lat},${L.lon}`); });

@@ -53,6 +53,19 @@
   </div>
 </main>
 
+<!-- SEMI-MANUAL SELECTION -->
+<section id="select" class="selectview" hidden>
+  <div class="sel-wrap">
+    <div class="sel-head">
+      <div><div class="kicker">SEMI-MANUAL MODE</div><h2>Select what matters</h2>
+      <p class="muted small">Drag boxes around decisive details: a sign, a building, a ridge line, a tree, a shop front. Each box gets a full-resolution deep scan (OCR, vision, reverse search) and weighs more in the result.</p></div>
+      <div class="sel-actions"><button class="btn" id="selCancel">Cancel</button><button class="btn" id="selClear">Clear</button><button class="btn" id="selWhole">Whole image</button><button class="btn solid" id="selGo">ANALYSE SELECTION</button></div>
+    </div>
+    <div class="sel-stage" id="selStage"><img id="selImg" alt=""><div id="selBoxes"></div></div>
+    <div class="sel-list muted small" id="selList">No region selected yet.</div>
+  </div>
+</section>
+
 <!-- LOADING -->
 <section id="loading" class="loading" hidden>
   <div class="load-card">
@@ -97,6 +110,8 @@
         </div>
         <select id="heatSel" hidden></select>
         <button class="chipbtn" id="shadowBtn" title="Click object base, object top, then shadow tip">SHADOW</button>
+        <button class="chipbtn" id="focusBtn" title="Draw a box around a detail and re-scan it">FOCUS</button>
+        <button class="btn solid" id="rescanBtn" hidden style="height:24px">RE-SCAN</button>
       </div>
       <div class="stage" id="stage">
         <img id="photo" alt="">
@@ -149,6 +164,7 @@
     <div class="kicker">SETTINGS</div>
     <label>Vision model<select id="setModel"></select></label>
     <p class="muted small">Downloaded once from the Hugging Face hub (no account, no key), then runs offline.</p>
+    <label class="chk"><input type="checkbox" id="setSemi"> <b>Semi-manual mode</b> — select regions of the photo before analysis</label>
     <label class="chk"><input type="checkbox" id="setOnline"> Online techniques (reverse search, geocoding)</label>
     <label class="chk"><input type="checkbox" id="setReverse"> Automatic Yandex multi-crop + TinEye</label>
     <label class="chk"><input type="checkbox" id="setLens"> Automatic Google Lens</label>

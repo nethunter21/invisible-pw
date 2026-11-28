@@ -220,3 +220,19 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
   .result{grid-template-columns:1fr} .caps{grid-template-columns:repeat(2,1fr)} .caps div{border-bottom:1px solid var(--line)}
   .load-card{grid-template-columns:1fr} .ver{display:none} .hero h1{font-size:34px}
 }
+
+/* semi-manual selection */
+.selectview{min-height:calc(100vh - 52px);display:grid;place-items:start center;padding:18px}
+.sel-wrap{width:100%;max-width:1200px}
+.sel-head{display:flex;justify-content:space-between;gap:20px;align-items:flex-end;margin-bottom:12px;flex-wrap:wrap}
+.sel-head h2{margin:6px 0 4px;font-size:22px;font-weight:650}
+.sel-head p{margin:0;max-width:620px}
+.sel-actions{display:flex;gap:6px}
+.sel-stage{position:relative;display:inline-block;max-width:100%;border:1px solid var(--line2);border-radius:6px;overflow:hidden;cursor:crosshair;user-select:none;line-height:0;background:#000}
+.sel-stage img{display:block;max-width:100%;max-height:72vh;pointer-events:none}
+#selBoxes,#viewBoxes{position:absolute;inset:0}
+.selbox{position:absolute;border:2px solid #fff;outline:1px solid #000;background:rgba(255,255,255,.08)}
+.selbox span{position:absolute;left:0;top:-1px;transform:translateY(-100%);background:#fff;color:#000;font:700 10px Consolas,monospace;padding:1px 5px;line-height:1.4}
+.selbox b{position:absolute;right:-1px;top:-1px;background:#000;color:#fff;border:1px solid #fff;font:700 11px Consolas,monospace;width:16px;height:16px;line-height:14px;text-align:center;cursor:pointer}
+.sel-list{margin-top:8px}
+.stage.selecting{cursor:crosshair}

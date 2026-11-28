@@ -199,8 +199,10 @@ class VisionEngine:
     def views(img: Image.Image, extra: list | None = None) -> list[dict]:
         w, h = img.size
         out = [{"name": "Full image", "box": [0, 0, w, h], "img": VisionEngine.letterbox(img)[0], "weight": 2.0}]
-        for n, b in extra or []:
-            out.append({"name": n, "box": list(b), "img": VisionEngine.letterbox(img.crop(tuple(b)))[0], "weight": 1.6})
+        for item in extra or []:
+            n, b = item[0], item[1]
+            wgt = item[2] if len(item) > 2 else 1.6
+            out.append({"name": n, "box": list(b), "img": VisionEngine.letterbox(img.crop(tuple(b)))[0], "weight": wgt})
         boxes = {
             "Top-left": (0, 0, w * 0.6, h * 0.6), "Top-right": (w * 0.4, 0, w, h * 0.6),
             "Bottom-left": (0, h * 0.4, w * 0.6, h), "Bottom-right": (w * 0.4, h * 0.4, w, h),
@@ -379,7 +381,7 @@ class VisionEngine:
         self._world = out
         return out
 
-    def world_places(self, img_e, log, night: bool = False) -> list[dict]:
+    def world_places(self, img_e, log, night: bool = False, focus_idx: list | None = None) -> list[dict]:
         cands = self.world_candidates()
         tmpl = MODELS[self.model_key]["prompt"]
         p1, p2 = [], []
@@ -395,6 +397,8 @@ class VisionEngine:
         e = e / e.norm(dim=-1, keepdim=True)
         P = self._probs(img_e, e)
         p = 0.5 * P[0] + 0.5 * (P[1:].max(0) if len(P) > 1 else P[0])
+        if focus_idx:
+            p = 0.3 * p + 0.7 * P[focus_idx].max(0)
         p = p / p.sum()
         order = np.argsort(-p)[:12]
         out = [dict(cands[j], p=float(p[j])) for j in order]

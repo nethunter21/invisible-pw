@@ -1,0 +1,47 @@
+name: GeoLens blind benchmark (real model)
+
+on:
+  workflow_dispatch:
+    inputs:
+      n:
+        description: "number of test points"
+        default: "40"
+  push:
+    branches: ["**"]
+    paths: ["geolens/geolens/**", "geolens/tools/benchmark.py", ".github/workflows/geolens-benchmark.yml"]
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    defaults:
+      run:
+        working-directory: geolens
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: geolens/requirements.txt
+      - name: Install (CPU torch)
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          grep -v pywebview requirements.txt > /tmp/req.txt
+          pip install -r /tmp/req.txt
+          pip uninstall -y opencv-python opencv-python-headless
+          pip install --no-deps "opencv-python-headless>=4.8,<5"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.geolens_models
+            ~/.geolens_bench
+            ~/.geolens_cache
+          key: geolens-bench-v1
+      - name: Run blind benchmark
+        run: python tools/benchmark.py --out bench.json --n ${{ github.event.inputs.n || '40' }} --cache ~/.geolens_bench --models-dir ~/.geolens_models
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: geolens-benchmark
+          path: geolens/bench.json

@@ -57,6 +57,38 @@ def run_ocr(img: Image.Image) -> list[dict]:
     return items
 
 
+def _pad(im: Image.Image, p: float = 0.5, col=(0, 0, 0)) -> tuple[Image.Image, int, int]:
+    W, H = im.size
+    dx, dy = int(W * p), int(H * p)
+    n = Image.new("RGB", (W + 2 * dx, H + 2 * dy), col)
+    n.paste(im, (dx, dy))
+    return n, dx, dy
+
+
+def run_ocr_robust(img: Image.Image) -> list[dict]:
+    """OCR for small crops: the text detector misses words touching the border or tiny text, so the crop is
+    padded, up-scaled, auto-contrasted and inverted; results from all variants are merged."""
+    from PIL import ImageOps
+    img = img.convert("RGB")
+    W, H = img.size
+    out: list[dict] = []
+    mean = tuple(int(v) for v in np.asarray(img).reshape(-1, 3).mean(0))
+    for scale, mode in ((max(1.0, min(3.0, 1100 / max(W, H))), "plain"), (max(1.0, min(4.0, 1600 / max(W, H))), "auto"), (2.0, "invert")):
+        im = img.resize((max(1, int(W * scale)), max(1, int(H * scale))), Image.LANCZOS) if scale != 1 else img
+        if mode == "auto":
+            im = ImageOps.autocontrast(im, cutoff=2)
+        elif mode == "invert":
+            im = ImageOps.invert(im)
+        padded, dx, dy = _pad(im, 0.5, mean if mode != "invert" else tuple(255 - v for v in mean))
+        for it in run_ocr(padded):
+            b = it["box"]
+            it["box"] = [int(max(0, (b[0] - dx) / scale)), int(max(0, (b[1] - dy) / scale)),
+                         int(min(W, (b[2] - dx) / scale)), int(min(H, (b[3] - dy) / scale))]
+            it["variant"] = mode
+            out.append(it)
+    return _dedupe(out)
+
+
 def _tiles(w: int, h: int) -> list[tuple[int, int, int, int]]:
     """Overlapping 2-col × 3-row grid (portrait) or 3×2 (landscape)."""
     cols, rows = (2, 3) if h > w else (3, 2)
@@ -120,9 +152,11 @@ def run_ocr_multi(img: Image.Image, log=None) -> tuple[list[dict], dict]:
                 crop = crop.resize((int(crop.size[0] * f), int(crop.size[1] * f)), Image.BICUBIC)
             else:
                 f = 1.0
-            for it in run_ocr(crop):
+            padded, dx, dy = _pad(crop, 0.15)
+            for it in run_ocr(padded):
                 bx = it["box"]
-                it["box"] = [int(x0 + bx[0] / f), int(y0 + bx[1] / f), int(x0 + bx[2] / f), int(y0 + bx[3] / f)]
+                bx = [bx[0] - dx, bx[1] - dy, bx[2] - dx, bx[3] - dy]
+                it["box"] = [int(x0 + max(0, bx[0]) / f), int(y0 + max(0, bx[1]) / f), int(x0 + bx[2] / f), int(y0 + bx[3] / f)]
                 items.append(it)
             passes += 1
         results[flip] = _dedupe(items)
