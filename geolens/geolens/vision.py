@@ -291,8 +291,10 @@ class VisionEngine:
                 if c["cc"] in idx:
                     from_cells[idx[c["cc"]]] += v
             from_cells = from_cells / from_cells.sum()
-            agg = direct ** 0.65 * from_cells ** 0.35  # weighted geometric mean of two readings
-            agg = agg / agg.sum()
+            # Benchmark round 3: fusing cells into the COUNTRY score lowered top-1 (46.2% vs 48.7% plain), while the
+            # cells improved distance metrics. So the country decision uses the plain full-frame StreetCLIP score
+            # and the cells are used for location (pin candidates + heatmap) only.
+            agg = P[0] / P[0].sum()
             og = np.argsort(-pg)[:15]
             res["geocells"] = [dict(cells[j], p=float(pg[j])) for j in og]
             log.add("vision", "Geocell classification over %d cities worldwide" % len(cells),
@@ -515,7 +517,10 @@ class VisionEngine:
             (e[0] @ t).backward()
         g = act.grad[0, 1:]
         a = act[0, 1:].detach()
-        cam = torch.relu((g * a).sum(-1)).cpu().numpy()
+        raw = (g * a).sum(-1)
+        cam = torch.relu(raw).cpu().numpy()
+        if cam.max() <= 0:  # degenerate gradients (tiny/odd models): fall back to magnitude
+            cam = raw.abs().cpu().numpy()
         n = int(round(math.sqrt(cam.shape[0])))
         cam = cam[: n * n].reshape(n, n)
         if cam.max() <= 0:

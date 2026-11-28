@@ -228,7 +228,7 @@ class Analyzer:
                 for cc, p in cc_p.most_common(3):
                     if p > 0.08:
                         evidence.append({"source": "Vision · landmarks/skylines", "label": f"Looks like {gz.country_name(cc)} places ({p*100:.0f}%)",
-                                         "countries": [cc], "weight": 2.6 * p,
+                                         "countries": [cc], "weight": 1.2 * p,
                                          "explain": "Direct similarity to named places/skylines in that country."})
         out["world"] = [{k: w_[k] for k in ("type", "name", "city", "cc", "lat", "lon", "p")} for w_ in world]
 
@@ -476,9 +476,9 @@ class Analyzer:
         prior = prior / prior.sum()
         if vis:
             for p in vis["probes"]:
-                if p["detected"] and p["countries"] and p["weight"] > 0:
+                if p["detected"] and p["countries"] and p["weight"] > 0 and p["prob"] >= 0.5:
                     evidence.append({"source": "Visual clue", "label": f"{p['title']}: {p['label']}", "countries": p["countries"],
-                                     "weight": 0.5 * p["weight"] * p["prob"], "explain": p["explain"] or p["teach"].split(". ")[0] + "."})
+                                     "weight": 0.3 * p["weight"] * p["prob"], "explain": p["explain"] or p["teach"].split(". ")[0] + "."})
 
         def posterior(ev):
             logp = np.log(prior + 1e-9)  # benchmark: the visual prior deserves full weight
@@ -623,7 +623,7 @@ class Analyzer:
         damp = 1.0 if veg_share >= 0.15 else 0.4  # few plants in frame → weaker species evidence
         land["species"] = found
         for f in found[:2]:
-            w = 0.8 * f["p"] * damp
+            w = 0.4 * f["p"] * damp
             land["factors"].append({"boxes": f["boxes"], "p": min(0.95, f["p"] * 1.6 * damp), "label": f["label"]})
             if f["countries"]:
                 evidence.append({"source": "Landscape · species", "label": f"{f['label']} ({f['p']*100:.0f}%)", "countries": f["countries"],
@@ -644,7 +644,7 @@ class Analyzer:
                 cs = ls.species_countries(c["boxes"], all_isos)
                 if cs:
                     evidence.append({"source": "Landscape · climate", "label": f"Köppen {c['code']} {c['label']} ({c['p']*100:.0f}%)",
-                                     "countries": cs, "weight": 0.5 * c["p"], "explain": f"Vegetation and light match a {c['label'].lower()} climate."})
+                                     "countries": cs, "weight": 0.25 * c["p"], "explain": f"Vegetation and light match a {c['label'].lower()} climate."})
         log.add("landscape", ("Climate class: " if confident else "Climate class (not decisive, ignored): ") + ", ".join(f"{c['code']} {c['label']} {c['p']*100:.0f}%" for c in cl),
                 method="Köppen-style zero-shot classification → latitude/longitude belts", teach=ls.TEACH["climate"], data=[{k: c[k] for k in ("code", "label", "p")} for c in cl])
         # season → hemisphere
