@@ -1,0 +1,145 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NameHunter</title>
+<style>
+:root{--bg:#000;--p:#0b0b0d;--p2:#141418;--b:#23232a;--t:#e8e8ee;--m:#8a8a99;--a:#7c5cff;--g:#22e08a;--r:#ff4d6d;--y:#ffc145;--c:#3ec5ff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--t);font:14px/1.4 "Segoe UI",system-ui,sans-serif}
+header{display:flex;align-items:center;gap:14px;padding:14px 20px;border-bottom:1px solid var(--b);background:#050507;position:sticky;top:0;z-index:5}
+h1{font-size:19px;margin:0;letter-spacing:.5px}h1 b{color:var(--a)}
+.pill{padding:4px 10px;border-radius:99px;font-size:12px;background:var(--p2);border:1px solid var(--b);color:var(--m)}
+.pill.on{color:var(--g);border-color:#1d6b47;box-shadow:0 0 12px #22e08a44}
+.sp{flex:1}
+.wrap{display:grid;grid-template-columns:390px 1fr;gap:16px;padding:16px;max-width:1600px;margin:auto}
+@media(max-width:900px){.wrap{grid-template-columns:1fr}}
+.card{background:var(--p);border:1px solid var(--b);border-radius:12px;padding:14px}
+.card h3{margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:1.2px;color:var(--m)}
+.sec{margin-bottom:14px}
+label{display:block;font-size:12px;color:var(--m);margin:8px 0 4px}
+input,select,textarea{width:100%;background:var(--p2);border:1px solid var(--b);color:var(--t);border-radius:8px;padding:8px 10px;font:inherit;outline:none}
+input:focus,select:focus,textarea:focus{border-color:var(--a)}
+textarea{min-height:80px;resize:vertical;font-family:Consolas,monospace;font-size:12px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:8px}.row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.chk{display:flex;align-items:center;gap:8px;margin:8px 0;color:var(--t);font-size:13px;cursor:pointer}.chk input{width:auto;accent-color:var(--a)}
+button{background:var(--p2);color:var(--t);border:1px solid var(--b);border-radius:8px;padding:8px 12px;font:inherit;cursor:pointer;transition:.15s}
+button:hover{border-color:var(--a)}
+.big{padding:12px;font-size:15px;font-weight:600;width:100%}
+.go{background:var(--a);border-color:var(--a)}.go:hover{filter:brightness(1.15)}
+.st{background:#2a0d14;border-color:var(--r);color:var(--r)}
+.modes{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.modes button{font-size:12px;padding:8px 4px}.modes button.sel{background:#1d1640;border-color:var(--a);color:#fff}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:16px}
+.stat{background:var(--p);border:1px solid var(--b);border-radius:12px;padding:12px}
+.stat .v{font-size:24px;font-weight:700;font-variant-numeric:tabular-nums}.stat .k{font-size:11px;color:var(--m);text-transform:uppercase;letter-spacing:1px}
+.bar{height:6px;background:var(--p2);border-radius:9px;overflow:hidden;margin-bottom:16px}.bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--a),var(--g));transition:width .4s}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}@media(max-width:1200px){.grid2{grid-template-columns:1fr}}
+.list{height:440px;overflow:auto;font-family:Consolas,monospace;font-size:13px;background:#050507;border:1px solid var(--b);border-radius:8px;padding:6px}
+.list div{padding:3px 6px;border-radius:4px;white-space:nowrap}
+.av{color:var(--g);font-weight:600;cursor:pointer}.av:hover{background:#0f2a1d}
+.l-taken{color:#666}.l-rate{color:var(--y)}.l-err{color:var(--r)}.l-warn{color:var(--y)}.l-info{color:var(--c)}.l-avail{color:var(--g);font-weight:700}
+.tools{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}.tools button{font-size:12px;padding:6px 10px}
+.hint{font-size:11px;color:var(--m);margin-top:4px}
+.prev{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.prev span{background:var(--p2);border:1px solid var(--b);padding:3px 8px;border-radius:6px;font-family:Consolas,monospace;font-size:12px}
+.hide{display:none!important}
+#toast{position:fixed;bottom:20px;right:20px;background:var(--a);color:#fff;padding:10px 16px;border-radius:8px;opacity:0;transition:.3s;pointer-events:none}
+</style></head><body>
+<header><h1>Name<b>Hunter</b></h1><span class="pill" id="status">Idle</span><span class="pill" id="wc"></span><span class="sp"></span>
+<button onclick="fetch('/api/open')">📂 Results</button><button onclick="if(confirm('Quit NameHunter?'))fetch('/api/quit').then(()=>document.body.innerHTML='<h2 style=padding:40px>Closed. You can close this tab.</h2>')">⏻ Quit</button></header>
+<div class="wrap">
+<div>
+ <div class="card sec"><h3>Mode</h3>
+  <div class="modes" id="modes">
+   <button data-m="mixed">Letters+Num</button><button data-m="letters">Letters</button><button data-m="digits">Numbers</button>
+   <button data-m="alnum">Any Alnum</button><button data-m="repeater">Repeaters</button><button data-m="words">Words EN/FR</button>
+   <button data-m="pattern">Pattern</button><button data-m="list">My List</button>
+  </div>
+  <div class="hint" id="mdesc"></div>
+ </div>
+ <div class="card sec"><h3>Generation</h3>
+  <div class="row" data-for="mixed letters digits alnum repeater"><div><label>Min length</label><input id="MinLen" type="number" min="2" max="32" value="4"></div><div><label>Max length</label><input id="MaxLen" type="number" min="2" max="32" value="4"></div></div>
+  <div data-for="repeater"><div class="row"><div><label>Repeater type</label><select id="RepType">
+   <option value="any">Any (mix all)</option><option value="same">Same char (aaaa)</option><option value="alt">Alternating (abab)</option><option value="blocks">Blocks (aaabb)</option><option value="pal">Palindrome (abcba)</option><option value="triple">One odd (aaaba)</option><option value="two">2 chars random (abbab)</option></select></div>
+   <div><label>Characters</label><select id="RepChars"><option value="both">Letters + numbers</option><option value="letters">Letters</option><option value="digits">Numbers</option></select></div></div></div>
+  <div data-for="pattern"><label>Pattern</label><input id="Pattern" value="LLDD" placeholder="e.g. CVCV, LLDD, xD_L">
+   <div class="hint">L=letter · D=digit · X=any · V=vowel · C=consonant · other chars stay as typed</div></div>
+  <div data-for="words">
+   <div class="row"><div><label>Language</label><select id="WordLang"><option value="both">English + French</option><option value="en">English</option><option value="fr">French</option></select></div>
+   <div><label>Style</label><select id="WordStyle"><option value="single">word</option><option value="digits">word + digits</option><option value="digitsfront">digits + word</option><option value="double">word + word</option><option value="doublesep">word . _ word</option></select></div></div>
+   <div class="row3"><div><label>Word min</label><input id="WordMin" type="number" value="3"></div><div><label>Word max</label><input id="WordMax" type="number" value="8"></div><div><label>Digits (0=1-3)</label><input id="WordDigits" type="number" value="0"></div></div>
+   <label>Use top N most common words (0 = all)</label><input id="WordTop" type="number" value="20000">
+  </div>
+  <div data-for="list"><label>Usernames (one per line)</label><textarea id="List" placeholder="name1&#10;name2"></textarea><input type="file" id="listFile" accept=".txt" style="margin-top:6px"></div>
+  <div class="row" data-for="mixed letters digits alnum repeater words pattern"><div><label>Prefix</label><input id="Prefix"></div><div><label>Suffix</label><input id="Suffix"></div></div>
+  <div class="row" data-for="mixed letters digits alnum repeater words pattern"><div><label>Separator</label><select id="Sep"><option value="none">None</option><option value=".">. (dot)</option><option value="_">_ (underscore)</option><option value="random">Random . or _</option></select></div>
+  <div><label>Separator position</label><select id="SepPos"><option value="end">End</option><option value="start">Beginning</option><option value="both">Both</option><option value="random">Random</option></select></div></div>
+  <div data-for="mixed letters digits alnum repeater words pattern"><label>Number of names to check (0 = infinite)</label><input id="Count" type="number" value="1000"></div>
+  <button style="width:100%;margin-top:10px" onclick="preview()">👁 Preview names</button><div class="prev" id="prev"></div>
+ </div>
+ <div class="card sec"><h3>Proxies &amp; Speed</h3>
+  <label>Connection</label><select id="ProxyMode"><option value="auto">Auto free proxies (scrape + rotate)</option><option value="custom">My proxies</option><option value="none">Proxyless (direct, slow)</option></select>
+  <div class="row"><div><label>Proxy type</label><select id="ProxyType"><option value="all">HTTP + SOCKS5</option><option value="http">HTTP</option><option value="socks5">SOCKS5</option></select></div><div><label>Threads</label><input id="Threads" type="number" value="300"></div></div>
+  <div data-p="custom"><label>Proxies (ip:port, user:pass@ip:port, ip:port:user:pass, socks5://…)</label><textarea id="Proxies"></textarea><input type="file" id="proxFile" accept=".txt" style="margin-top:6px"></div>
+  <label class="chk" data-p="auto custom"><input type="checkbox" id="UseDirect"> Also use my own IP</label>
+  <div class="row3"><div><label>Timeout (s)</label><input id="Timeout" type="number" value="8"></div><div><label>Delay/proxy ms</label><input id="DelayMs" type="number" value="0"></div><div><label>Fails→drop</label><input id="MaxFails" type="number" value="2"></div></div>
+  <div class="hint">Rate-limited proxies cool down automatically and the name is re-checked on another one. Proxyless is capped at 3 threads.</div>
+ </div>
+ <div class="card sec"><h3>Extras</h3>
+  <label class="chk"><input type="checkbox" id="SkipChecked" checked> Skip names already checked before</label>
+  <label class="chk"><input type="checkbox" id="SaveTaken"> Also save taken names (taken.txt)</label>
+  <label class="chk"><input type="checkbox" id="ShowTaken" checked> Show taken names in live log</label>
+  <label class="chk"><input type="checkbox" id="Sound" checked> Sound on available</label>
+  <label>Discord webhook for hits (optional)</label><input id="Webhook" placeholder="https://discord.com/api/webhooks/...">
+ </div>
+ <button class="big go" id="startBtn" onclick="start()">▶ START</button>
+ <button class="big st hide" id="stopBtn" onclick="fetch('/api/stop',{method:'POST'})" style="margin-top:8px">■ STOP</button>
+</div>
+<div>
+ <div class="stats">
+  <div class="stat"><div class="v" id="s-checked">0</div><div class="k">Checked</div></div>
+  <div class="stat"><div class="v" style="color:var(--g)" id="s-avail">0</div><div class="k">Available</div></div>
+  <div class="stat"><div class="v" style="color:#777" id="s-taken">0</div><div class="k">Taken</div></div>
+  <div class="stat"><div class="v" style="color:var(--c)" id="s-cps">0</div><div class="k">Checks / sec</div></div>
+  <div class="stat"><div class="v" style="color:var(--y)" id="s-rate">0</div><div class="k">Rate limits dodged</div></div>
+  <div class="stat"><div class="v" style="color:var(--r)" id="s-errs">0</div><div class="k">Proxy errors</div></div>
+  <div class="stat"><div class="v" style="color:var(--a)" id="s-alive">0</div><div class="k">Proxies alive</div></div>
+  <div class="stat"><div class="v" id="s-el">0:00</div><div class="k">Elapsed</div></div>
+ </div>
+ <div class="bar"><i id="prog"></i></div>
+ <div class="grid2">
+  <div class="card"><h3>✅ Available (<span id="ac">0</span>)</h3>
+   <div class="tools"><button onclick="copyAll()">Copy all</button><button onclick="exportTxt()">Export .txt</button><button onclick="avail=[];document.getElementById('avl').innerHTML='';ac.textContent=0">Clear</button><input id="flt" placeholder="filter…" style="width:120px;padding:5px 8px" oninput="renderAvail()"></div>
+   <div class="list" id="avl"></div><div class="hint">Click a name to copy. Saved to results/available.txt automatically.</div></div>
+  <div class="card"><h3>Live log</h3><div class="tools"><button onclick="lg.innerHTML=''">Clear</button><label class="chk" style="margin:0"><input type="checkbox" id="autoscroll" checked> Auto-scroll</label></div><div class="list" id="lg"></div></div>
+ </div>
+</div></div>
+<div id="toast"></div>
+<script>
+const $=id=>document.getElementById(id);const F=['MinLen','MaxLen','RepType','RepChars','Pattern','WordLang','WordStyle','WordMin','WordMax','WordDigits','WordTop','List','Prefix','Suffix','Sep','SepPos','Count','ProxyMode','ProxyType','Threads','Proxies','UseDirect','Timeout','DelayMs','MaxFails','SkipChecked','SaveTaken','ShowTaken','Sound','Webhook'];
+const D={mixed:'Letters + numbers, at least one number (e.g. a7kx). Classic 4-char hunting.',letters:'Only letters (e.g. qzvx).',digits:'Only numbers (e.g. 4821).',alnum:'Any mix of letters and numbers.',repeater:'Repeating patterns: aaaa, abab, aaabb, palindromes… set any length up to 32.',words:'Real English & French common words (~90k bank), with digit/combo/separator styles.',pattern:'Build your own template like CVCV or LL_DD.',list:'Check your own list of usernames.'};
+let mode='mixed',avail=[],ctx;const ac=$('ac'),lg=$('lg');
+function toast(t){const e=$('toast');e.textContent=t;e.style.opacity=1;clearTimeout(e._t);e._t=setTimeout(()=>e.style.opacity=0,1500)}
+function setMode(m){mode=m;document.querySelectorAll('#modes button').forEach(b=>b.classList.toggle('sel',b.dataset.m==m));$('mdesc').textContent=D[m];document.querySelectorAll('[data-for]').forEach(e=>e.classList.toggle('hide',!e.dataset.for.split(' ').includes(m)));save()}
+function upd(){const p=$('ProxyMode').value;document.querySelectorAll('[data-p]').forEach(e=>e.classList.toggle('hide',!e.dataset.p.split(' ').includes(p)))}
+document.querySelectorAll('#modes button').forEach(b=>b.onclick=()=>setMode(b.dataset.m));
+function cfg(){const c={Mode:mode};F.forEach(k=>{const e=$(k);c[k]=e.type=='checkbox'?e.checked:e.type=='number'?+e.value:e.value});return c}
+function save(){try{localStorage.nh=JSON.stringify(cfg())}catch(e){}}
+function load(){try{const c=JSON.parse(localStorage.nh||'{}');F.forEach(k=>{if(c[k]!==undefined){const e=$(k);e.type=='checkbox'?e.checked=c[k]:e.value=c[k]}});if(c.Mode)mode=c.Mode}catch(e){}}
+load();setMode(mode);upd();$('ProxyMode').onchange=()=>{upd();save()};document.querySelectorAll('input,select,textarea').forEach(e=>e.addEventListener('change',save));
+function readFile(inp,tgt){$(inp).onchange=e=>{const f=e.target.files[0];if(f)f.text().then(t=>{$(tgt).value=t;save();toast('Loaded '+t.split('\n').filter(x=>x.trim()).length+' lines')})}}
+readFile('listFile','List');readFile('proxFile','Proxies');
+async function preview(){const r=await fetch('/api/preview',{method:'POST',body:JSON.stringify(cfg())});if(!r.ok){toast(await r.text());return}const j=await r.json();$('prev').innerHTML=j.names.map(n=>'<span>'+n+'</span>').join('')+(j.pool?'<div class="hint" style="width:100%">'+j.pool.toLocaleString()+' words match filters</div>':'')}
+async function start(){save();const r=await fetch('/api/start',{method:'POST',body:JSON.stringify(cfg())});if(!r.ok){toast(await r.text());return}avail=[];renderAvail()}
+function beep(){if(!$('Sound').checked)return;try{ctx=ctx||new AudioContext();const o=ctx.createOscillator(),g=ctx.createGain();o.frequency.value=880;g.gain.value=.08;o.connect(g).connect(ctx.destination);o.start();o.stop(ctx.currentTime+.12)}catch(e){}}
+function renderAvail(){const f=$('flt').value.toLowerCase();$('avl').innerHTML=avail.filter(n=>n.includes(f)).map(n=>'<div class="av" onclick="cp(\''+n+'\')">'+n+'</div>').join('');ac.textContent=avail.length}
+function cp(n){navigator.clipboard.writeText(n);toast('Copied '+n)}
+function copyAll(){navigator.clipboard.writeText(avail.join('\n'));toast('Copied '+avail.length+' names')}
+function exportTxt(){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([avail.join('\n')],{type:'text/plain'}));a.download='available.txt';a.click()}
+const fmt=n=>(+n||0).toLocaleString();
+fetch('/api/info').then(r=>r.json()).then(j=>$('wc').textContent='📚 '+fmt(j.en)+' EN · '+fmt(j.fr)+' FR words');
+const es=new EventSource('/api/events');
+es.onmessage=e=>{const s=JSON.parse(e.data);$('status').textContent=s.running?(s.scraping?'Running · scraping proxies':'Running'):'Idle';$('status').classList.toggle('on',s.running);
+$('startBtn').classList.toggle('hide',s.running);$('stopBtn').classList.toggle('hide',!s.running);
+if(s.checked!==undefined){['checked','avail','taken','rate','errs','alive'].forEach(k=>$('s-'+k).textContent=fmt(s[k]));$('s-cps').textContent=(s.cps||0).toFixed(1);
+$('s-el').textContent=Math.floor(s.elapsed/60)+':'+String(s.elapsed%60).padStart(2,'0');$('prog').style.width=s.target?Math.min(100,(s.checked+s.invalid+s.failed)/s.target*100)+'%':(s.running?'100%':'0')}
+if(!s.logs||!s.logs.length)return;const st=$('ShowTaken').checked;let h='',got=0;
+for(const l of s.logs){if(l.kind=='avail'){if(!avail.includes(l.msg)){avail.push(l.msg);got++}h+='<div class="l-avail">'+l.t+'  ✅ AVAILABLE  '+l.msg+'</div>'}else if(l.kind=='taken'){if(st)h+='<div class="l-taken">'+l.t+'  ✗ '+l.msg+'</div>'}else h+='<div class="l-'+l.kind+'">'+l.t+'  '+l.msg+'</div>'}
+if(got){renderAvail();beep()}if(h){lg.insertAdjacentHTML('beforeend',h);while(lg.children.length>1500)lg.firstChild.remove();if($('autoscroll').checked)lg.scrollTop=lg.scrollHeight}};
+</script></body></html>
