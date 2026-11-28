@@ -202,6 +202,7 @@ class Analyzer:
                 vis = self.engine.analyze(masked, log, extra_views=focus_views + list(bg_boxes))
             if vis:
                 all_isos = self.engine.country_isos
+                out["visual_top"] = [k for k, _ in sorted(vis["country_probs"].items(), key=lambda kv: -kv[1])[:5]]
                 log.set_stage("Matching landmarks & skylines worldwide", 0.36)
                 with log.timer("vision", "World landmark pass finished", method="CLIP zero-shot"):
                     world = self.engine.world_places(vis["img_e"], log, night=out["stats"]["night"],
@@ -602,17 +603,19 @@ class Analyzer:
         p, _ = eng.option_probs(img_e, [x[2] for x in ls.SPECIES], "species")
         order = np.argsort(-p)
         found = []
-        for j in order[:5]:
+        for rank, j in enumerate(order[:3]):
             sid, label, prompts, boxes, teach = ls.SPECIES[j]
-            if sid == "none" or p[j] < 0.08:
+            nxt = p[order[rank + 1]] if rank + 1 < len(order) else 0
+            # calibrated: a species must be clearly above the background of 36 hypotheses (benchmark-tuned)
+            if sid == "none" or p[j] < 0.18 or (rank == 0 and p[j] < 1.4 * nxt):
                 continue
             found.append({"id": sid, "label": label, "p": round(float(p[j]), 3), "boxes": boxes, "teach": teach,
                           "countries": ls.species_countries(boxes, all_isos)})
         veg_share = sum(comp.get("fractions", {}).get(k, 0) for k in ("trees", "grass", "crops")) if comp else 0.5
         damp = 1.0 if veg_share >= 0.15 else 0.4  # few plants in frame → weaker species evidence
         land["species"] = found
-        for f in found[:3]:
-            w = 1.3 * f["p"] * damp
+        for f in found[:2]:
+            w = 0.8 * f["p"] * damp
             land["factors"].append({"boxes": f["boxes"], "p": min(0.95, f["p"] * 1.6 * damp), "label": f["label"]})
             if f["countries"]:
                 evidence.append({"source": "Landscape · species", "label": f"{f['label']} ({f['p']*100:.0f}%)", "countries": f["countries"],
@@ -626,14 +629,15 @@ class Analyzer:
         oc = np.argsort(-pc)
         cl = [{"code": ls.CLIMATES[j][0], "label": ls.CLIMATES[j][1], "p": round(float(pc[j]), 3), "boxes": ls.CLIMATES[j][3]} for j in oc[:3]]
         land["climate"] = cl
-        if fam not in ("indoor", "portrait") or veg_share > 0.1:
-            for c in cl[:2]:
+        confident = cl[0]["p"] >= 0.35 and (len(cl) < 2 or cl[0]["p"] >= 1.4 * cl[1]["p"])
+        if confident and (fam not in ("indoor", "portrait") or veg_share > 0.1):
+            for c in cl[:1]:
                 land["factors"].append({"boxes": c["boxes"], "p": min(0.8, c["p"] * 1.2), "label": "Climate " + c["code"], "alpha": 0.7})
                 cs = ls.species_countries(c["boxes"], all_isos)
                 if cs:
                     evidence.append({"source": "Landscape · climate", "label": f"Köppen {c['code']} {c['label']} ({c['p']*100:.0f}%)",
-                                     "countries": cs, "weight": 0.9 * c["p"], "explain": f"Vegetation and light match a {c['label'].lower()} climate."})
-        log.add("landscape", "Climate class: " + ", ".join(f"{c['code']} {c['label']} {c['p']*100:.0f}%" for c in cl),
+                                     "countries": cs, "weight": 0.5 * c["p"], "explain": f"Vegetation and light match a {c['label'].lower()} climate."})
+        log.add("landscape", ("Climate class: " if confident else "Climate class (not decisive, ignored): ") + ", ".join(f"{c['code']} {c['label']} {c['p']*100:.0f}%" for c in cl),
                 method="Köppen-style zero-shot classification → latitude/longitude belts", teach=ls.TEACH["climate"], data=[{k: c[k] for k in ("code", "label", "p")} for c in cl])
         # season → hemisphere
         ps, _ = eng.option_probs(img_e, [x[2] for x in ls.SEASONS], "season")

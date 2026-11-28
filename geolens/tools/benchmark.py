@@ -126,7 +126,18 @@ def main():
         top3 = [c["iso"] for c in res["countries"][:3]]
         regs = (res.get("heat") or {}).get("regions", [])[:5]
         in_heat = any(gz.haversine_km(m["lat"], m["lon"], r["lat"], r["lon"]) <= 300 for r in regs)
-        row = {"name": name, "truth": [m["lat"], m["lon"]], "truth_cc": truth_cc, "pred": [L["lat"], L["lon"]],
+        # ---- ablation: pure country classifiers on the same image
+        from geolens.vision import MODELS
+        im_raw = Image.open(m["path"]).convert("RGB")
+        isos = engine.country_isos
+        tmpl = MODELS[engine.model_key]["prompt"]
+        t_plain = engine.cached_text([tmpl.format(gz.country_name(i)) for i in isos], "c1")
+        def top(img_e, temb):
+            return isos[int(engine._probs(img_e, temb)[0].argmax())]
+        abl = {"plain_centercrop": top(engine.image_emb([im_raw]), t_plain),
+               "plain_letterbox": top(engine.image_emb([engine.letterbox(im_raw)[0]]), t_plain),
+               "visual_pipeline": (res.get("visual_top") or [None])[0]}
+        row = {"ablation": abl, "name": name, "truth": [m["lat"], m["lon"]], "truth_cc": truth_cc, "pred": [L["lat"], L["lon"]],
                "pred_cc": L["iso"], "km": round(d, 1), "top3": top3, "conf": L["confidence"], "in_top5_regions": in_heat,
                "scene": (res.get("landscape") or {}).get("composition", {}).get("family_label"),
                "species": [s["label"] for s in (res.get("landscape") or {}).get("species", [])][:3],
@@ -143,6 +154,7 @@ def main():
         return
     summ = {
         "n": n,
+        **{f"top1_{k}": round(sum(r["ablation"][k] == r["truth_cc"] for r in rows) / n, 3) for k in rows[0]["ablation"]},
         "country_top1": round(sum(r["truth_cc"] == r["pred_cc"] for r in rows) / n, 3),
         "country_top3": round(sum(r["truth_cc"] in r["top3"] for r in rows) / n, 3),
         "median_km": round(statistics.median(km), 1),

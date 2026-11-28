@@ -30,6 +30,10 @@ MODELS = {
 
 ProgressFn = Callable[[str, float], None]
 
+# Remote territories / uninhabited islands with (almost) no photos — they only soak up probability mass.
+EXCLUDED_TERRITORIES = set("""GS SH GU VI AS MP IM JE GG AX SJ BQ CW SX AW KY BM TC VG AI MS PN NF CX CC HM BV TF IO UM WF
+PM BL MF YT EH KP FK TK NU CK NR TV PW MH FM KI WS TO SB VU""".split())
+
 
 class VisionEngine:
     def __init__(self, model_key: str = "streetclip", cache_dir: str | None = None):
@@ -96,7 +100,8 @@ class VisionEngine:
                 self.processor = CLIPProcessor.from_pretrained(local)
                 for p in self.model.parameters():
                     p.requires_grad_(False)
-                isos = [iso for iso, c in gz.countries().items() if c["area"] >= 300 or iso in ("SG", "HK", "MO", "MT", "AD", "LI")]
+                isos = [iso for iso, c in gz.countries().items()
+                        if (c["area"] >= 300 or iso in ("SG", "HK", "MO", "MT", "AD", "LI")) and iso not in EXCLUDED_TERRITORIES]
                 self.country_isos = sorted(isos)
                 self.status = "ready"
                 self.error = None
@@ -174,8 +179,10 @@ class VisionEngine:
         temb = self.option_emb([pl for _, pl in CELL_LABELS], "cells")
         P = self._probs(e, temb)
         labels = [k for k, _ in CELL_LABELS]
-        frac = {k: round(float(P[:, i].mean()), 3) for i, k in enumerate(labels)}
-        grid = [[labels[int(np.argmax(P[r * n + c]))] for c in range(n)] for r in range(n)]
+        arg = P.argmax(1)
+        # fraction = share of cells whose best label is k (robust), blended with mean probability (soft)
+        frac = {k: round(float(0.7 * (arg == i).mean() + 0.3 * P[:, i].mean()), 3) for i, k in enumerate(labels)}
+        grid = [[labels[int(arg[r * n + c])] for c in range(n)] for r in range(n)]
         fam, fam_label = scene_from_composition(frac)
         return {"fractions": frac, "grid": grid, "family": fam, "family_label": fam_label}
 

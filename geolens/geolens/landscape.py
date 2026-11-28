@@ -205,7 +205,7 @@ def scene_from_composition(comp: dict) -> tuple[str, str]:
         return "indoor", "Indoors"
     if f.get("person", 0) > 0.45:
         return "portrait", "Portrait / selfie (background analysed)"
-    if built >= 0.28 and f.get("building", 0) >= 0.12:
+    if built >= 0.3 and f.get("building", 0) >= 0.18 and built >= 0.8 * nature:
         return "urban", "Urban / built-up"
     if f.get("sand", 0) + f.get("rock", 0) >= 0.35 and nature < 0.2:
         return "arid", "Arid / desert terrain"
