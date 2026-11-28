@@ -10,12 +10,12 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -62,6 +62,8 @@ type Config struct {
 	SaveTaken                 bool
 	Webhook                   string
 	MaxFails                  int
+	ValThreads, ValTimeout    int
+	Validate                  bool
 }
 
 // ---------------- generator ----------------
@@ -308,151 +310,6 @@ func (g *Gen) next() (string, bool) {
 
 func valid(s string) bool { return validRe.MatchString(s) && !strings.Contains(s, "..") }
 
-// ---------------- proxies ----------------
-
-type Proxy struct {
-	addr   string
-	client *http.Client
-	fails  int
-	direct bool
-}
-
-type Pool struct {
-	ch    chan *Proxy
-	alive atomic.Int64
-	mu    sync.Mutex
-	seen  map[string]bool
-}
-
-func newClient(pu *url.URL, timeout time.Duration) *http.Client {
-	tr := &http.Transport{
-		DialContext:         (&net.Dialer{Timeout: timeout}).DialContext,
-		TLSHandshakeTimeout: timeout,
-		MaxIdleConnsPerHost: 4,
-		IdleConnTimeout:     60 * time.Second,
-		ForceAttemptHTTP2:   pu == nil,
-	}
-	if pu != nil {
-		tr.Proxy = http.ProxyURL(pu)
-	}
-	return &http.Client{Transport: tr, Timeout: timeout}
-}
-
-func parseProxy(line, def string) *url.URL {
-	line = strings.TrimSpace(line)
-	if line == "" || strings.HasPrefix(line, "#") {
-		return nil
-	}
-	if f := strings.Fields(line); len(f) > 0 {
-		line = f[0]
-	}
-	if !strings.Contains(line, "://") {
-		p := strings.Split(line, ":")
-		if len(p) == 4 && !strings.Contains(line, "@") {
-			line = p[2] + ":" + p[3] + "@" + p[0] + ":" + p[1]
-		}
-		line = def + "://" + line
-	}
-	u, err := url.Parse(line)
-	if err != nil || u.Host == "" || u.Port() == "" {
-		return nil
-	}
-	if u.Scheme == "https" {
-		u.Scheme = "http"
-	}
-	if u.Scheme != "http" && u.Scheme != "socks5" && u.Scheme != "socks5h" {
-		return nil
-	}
-	return u
-}
-
-func (pl *Pool) add(u *url.URL, timeout time.Duration) bool {
-	pl.mu.Lock()
-	k := u.String()
-	if pl.seen[k] {
-		pl.mu.Unlock()
-		return false
-	}
-	pl.seen[k] = true
-	pl.mu.Unlock()
-	p := &Proxy{addr: u.Host, client: newClient(u, timeout)}
-	select {
-	case pl.ch <- p:
-		pl.alive.Add(1)
-		return true
-	default:
-		return false
-	}
-}
-
-func (pl *Pool) put(p *Proxy, after time.Duration) {
-	if after <= 0 {
-		pl.ch <- p
-		return
-	}
-	time.AfterFunc(after, func() { pl.ch <- p })
-}
-
-var sources = map[string][]string{
-	"http": {
-		"https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
-		"https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
-		"https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt",
-		"https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/proxies/http.txt",
-		"https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/http.txt",
-		"https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt",
-		"https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&protocol=http&proxy_format=ipport&format=text",
-		"https://www.proxy-list.download/api/v1/get?type=http",
-	},
-	"socks5": {
-		"https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt",
-		"https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt",
-		"https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks5/data.txt",
-		"https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/proxies/socks5.txt",
-		"https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/socks5.txt",
-		"https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&protocol=socks5&proxy_format=ipport&format=text",
-		"https://www.proxy-list.download/api/v1/get?type=socks5",
-	},
-}
-
-func (r *Run) scrape() {
-	if !r.scraping.CompareAndSwap(false, true) {
-		return
-	}
-	defer r.scraping.Store(false)
-	types := []string{"http", "socks5"}
-	if r.c.ProxyType == "http" || r.c.ProxyType == "socks5" {
-		types = []string{r.c.ProxyType}
-	}
-	r.log("info", "Scraping free proxies…")
-	cl := &http.Client{Timeout: 15 * time.Second}
-	var wg sync.WaitGroup
-	var added atomic.Int64
-	for _, t := range types {
-		for _, s := range sources[t] {
-			wg.Add(1)
-			go func(t, s string) {
-				defer wg.Done()
-				resp, err := cl.Get(s)
-				if err != nil {
-					return
-				}
-				defer resp.Body.Close()
-				sc := bufio.NewScanner(io.LimitReader(resp.Body, 20<<20))
-				for sc.Scan() {
-					if u := parseProxy(sc.Text(), t); u != nil && r.pool.add(u, r.timeout) {
-						added.Add(1)
-					}
-				}
-			}(t, s)
-		}
-	}
-	wg.Wait()
-	r.log("info", fmt.Sprintf("Scraped %d new proxies (%d alive in pool)", added.Load(), r.pool.alive.Load()))
-}
-
-// ---------------- engine ----------------
-
 type LogE struct {
 	Seq  int64  `json:"seq"`
 	Kind string `json:"kind"`
@@ -471,6 +328,10 @@ type Run struct {
 	pending  atomic.Int64
 	pool     *Pool
 	scraping atomic.Bool
+	lastScrape atomic.Int64
+	valTimeout time.Duration
+	reasonMu sync.Mutex
+	reasons  map[string]int
 	start    time.Time
 	end      atomic.Int64
 	attempts sync.Map
@@ -615,7 +476,7 @@ const (
 	stInvalid
 )
 
-func check(p *Proxy, name string) (int, float64) {
+func check(p *Proxy, name string) (int, float64, string) {
 	req, _ := http.NewRequest("POST", api, strings.NewReader(`{"username":"`+name+`"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", ua)
@@ -625,7 +486,18 @@ func check(p *Proxy, name string) (int, float64) {
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return stErr, 0
+		e := err.Error()
+		switch {
+		case strings.Contains(e, "Timeout") || strings.Contains(e, "deadline"):
+			return stErr, 0, "proxy timeout"
+		case strings.Contains(e, "refused"):
+			return stErr, 0, "proxy refused"
+		case strings.Contains(e, "tls") || strings.Contains(e, "certificate"):
+			return stErr, 0, "proxy TLS error"
+		case strings.Contains(e, "EOF") || strings.Contains(e, "reset"):
+			return stErr, 0, "proxy closed connection"
+		}
+		return stErr, 0, "proxy connect error"
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
@@ -636,9 +508,9 @@ func check(p *Proxy, name string) (int, float64) {
 		}
 		if json.Unmarshal(data, &x) == nil && x.Taken != nil {
 			if *x.Taken {
-				return stTaken, 0
+				return stTaken, 0, ""
 			}
-			return stAvail, 0
+			return stAvail, 0, ""
 		}
 	case 429:
 		var x struct {
@@ -648,13 +520,20 @@ func check(p *Proxy, name string) (int, float64) {
 		if x.RetryAfter == 0 {
 			fmt.Sscanf(resp.Header.Get("Retry-After"), "%g", &x.RetryAfter)
 		}
-		return stRate, x.RetryAfter
+		return stRate, x.RetryAfter, ""
 	case 400:
 		if bytes.Contains(data, []byte("username")) {
-			return stInvalid, 0
+			return stInvalid, 0, ""
 		}
 	}
-	return stErr, 0
+	snip := strings.Join(strings.Fields(string(data)), " ")
+	if len(snip) > 90 {
+		snip = snip[:90]
+	}
+	if strings.Contains(snip, "cloudflare") || strings.Contains(snip, "<html") || strings.Contains(snip, "<!DOCTYPE") {
+		snip = "html/blocked page"
+	}
+	return stErr, 0, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, snip)
 }
 
 func (r *Run) worker() {
@@ -670,7 +549,7 @@ func (r *Run) worker() {
 			r.requeue(name)
 			return
 		}
-		st, ra := check(p, name)
+		st, ra, why := check(p, name)
 		delay := time.Duration(r.c.DelayMs) * time.Millisecond
 		switch st {
 		case stAvail, stTaken, stInvalid:
@@ -717,11 +596,15 @@ func (r *Run) worker() {
 			r.requeue(name)
 		default:
 			r.errs.Add(1)
+			r.reasonMu.Lock()
+			r.reasons[why]++
+			r.reasonMu.Unlock()
 			p.fails++
 			if p.direct {
 				r.pool.put(p, 2*time.Second)
 			} else if p.fails >= r.c.MaxFails {
 				r.pool.alive.Add(-1)
+				p.client.CloseIdleConnections()
 			} else {
 				r.pool.put(p, time.Second)
 			}
@@ -741,6 +624,7 @@ func postHook(u, name string) {
 func (r *Run) monitor() {
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
+	tick := 0
 	for {
 		select {
 		case <-r.stop:
@@ -751,11 +635,27 @@ func (r *Run) monitor() {
 			r.Stop(fmt.Sprintf("Finished — %d available out of %d checked", r.avail.Load(), r.checked.Load()))
 			return
 		}
+		tick++
+		if tick%6 == 0 {
+			r.reasonMu.Lock()
+			if len(r.reasons) > 0 {
+				var parts []string
+				for k, v := range r.reasons {
+					parts = append(parts, fmt.Sprintf("%s ×%d", k, v))
+				}
+				sort.Slice(parts, func(i, j int) bool { return len(parts[i]) < len(parts[j]) })
+				r.log("rate", "Error breakdown (last 6s): "+strings.Join(parts, " | "))
+				r.reasons = map[string]int{}
+			}
+			r.reasonMu.Unlock()
+		}
 		alive := r.pool.alive.Load()
-		if r.c.ProxyMode == "auto" && alive < 300 && !r.scraping.Load() {
+		since := time.Now().Unix() - r.lastScrape.Load()
+		if r.c.ProxyMode == "auto" && !r.scraping.Load() &&
+			((len(r.pool.raw) < 2000 && alive < int64(r.c.Threads)*2 && since > 60) || since > 600) {
 			go r.scrape()
 		}
-		if alive <= 0 && r.c.ProxyMode != "auto" && !r.scraping.Load() {
+		if alive <= 0 && r.c.ProxyMode != "auto" && !r.scraping.Load() && len(r.pool.raw) == 0 && len(r.pool.prio) == 0 && tick > 3*r.c.ValTimeout {
 			r.Stop("Stopped — no working proxies left")
 			return
 		}
@@ -782,7 +682,16 @@ func startRun(c *Config) (*Run, error) {
 		c.Timeout = 8
 	}
 	if c.MaxFails < 1 {
-		c.MaxFails = 2
+		c.MaxFails = 3
+	}
+	if c.ValThreads < 1 {
+		c.ValThreads = 1500
+	}
+	if c.ValThreads > 5000 {
+		c.ValThreads = 5000
+	}
+	if c.ValTimeout < 2 {
+		c.ValTimeout = 6
 	}
 	if c.WordMax < c.WordMin {
 		c.WordMax = c.WordMin
@@ -794,20 +703,27 @@ func startRun(c *Config) (*Run, error) {
 	}
 	r := &Run{c: c, timeout: time.Duration(c.Timeout) * time.Second, stop: make(chan struct{}),
 		gen: make(chan string, 2048), retry: make(chan string, 200000), start: time.Now(),
-		pool: &Pool{ch: make(chan *Proxy, 400000), seen: map[string]bool{}}}
+		pool: newPool(), valTimeout: time.Duration(c.ValTimeout) * time.Second, reasons: map[string]int{}}
 	if c.ProxyMode == "none" || c.UseDirect {
 		r.pool.ch <- &Proxy{addr: "direct", client: newClient(nil, r.timeout), direct: true}
 		r.pool.alive.Add(1)
 	}
 	if c.ProxyMode == "custom" {
 		def := c.ProxyType
-		if def != "socks5" {
+		if def != "socks5" && def != "socks4" {
 			def = "http"
 		}
 		n := 0
 		for _, l := range strings.Split(c.Proxies, "\n") {
-			if u := parseProxy(l, def); u != nil && r.pool.add(u, r.timeout) {
-				n++
+			if u := parseProxy(l, def); u != nil {
+				if c.Validate {
+					if r.pool.queue(u, true) {
+						n++
+					}
+				} else {
+					r.pool.addDirect(u, r.timeout)
+					n++
+				}
 			}
 		}
 		if n == 0 && !c.UseDirect {
@@ -830,7 +746,15 @@ func startRun(c *Config) (*Run, error) {
 	}
 	r.log("info", fmt.Sprintf("Started — mode %s, %d threads", c.Mode, c.Threads))
 	if c.ProxyMode == "auto" {
+		if n := loadGood(r); n > 0 {
+			r.log("info", fmt.Sprintf("Re-testing %d previously working proxies first", n))
+		}
 		go r.scrape()
+	}
+	if c.ProxyMode != "none" {
+		for i := 0; i < c.ValThreads; i++ {
+			go r.validator()
+		}
 	}
 	go r.generate(g, skip)
 	for i := 0; i < c.Threads; i++ {
@@ -988,6 +912,8 @@ func main() {
 				st["rate"], st["errs"], st["invalid"] = r.rate.Load(), r.errs.Load(), r.invalid.Load()
 				st["failed"], st["generated"], st["pending"] = r.failed.Load(), r.generated.Load(), r.pending.Load()
 				st["alive"], st["scraping"] = r.pool.alive.Load(), r.scraping.Load()
+				st["scraped"], st["tested"], st["working"] = r.pool.scraped.Load(), r.pool.tested.Load(), r.pool.working.Load()
+				st["idle"] = len(r.pool.ch)
 				st["target"], st["cps"], st["elapsed"] = r.c.Count, cps, int(el.Seconds())
 			}
 			b, _ := json.Marshal(st)

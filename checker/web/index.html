@@ -75,11 +75,13 @@ button:hover{border-color:var(--a)}
  </div>
  <div class="card sec"><h3>Proxies &amp; Speed</h3>
   <label>Connection</label><select id="ProxyMode"><option value="auto">Auto free proxies (scrape + rotate)</option><option value="custom">My proxies</option><option value="none">Proxyless (direct, slow)</option></select>
-  <div class="row"><div><label>Proxy type</label><select id="ProxyType"><option value="all">HTTP + SOCKS5</option><option value="http">HTTP</option><option value="socks5">SOCKS5</option></select></div><div><label>Threads</label><input id="Threads" type="number" value="300"></div></div>
+  <div class="row"><div><label>Proxy type</label><select id="ProxyType"><option value="all">All (HTTP+SOCKS4+SOCKS5)</option><option value="http">HTTP</option><option value="socks4">SOCKS4</option><option value="socks5">SOCKS5</option></select></div><div><label>Threads</label><input id="Threads" type="number" value="300"></div></div>
   <div data-p="custom"><label>Proxies (ip:port, user:pass@ip:port, ip:port:user:pass, socks5://…)</label><textarea id="Proxies"></textarea><input type="file" id="proxFile" accept=".txt" style="margin-top:6px"></div>
+  <label class="chk" data-p="custom"><input type="checkbox" id="Validate" checked> Test proxies before use (recommended)</label>
   <label class="chk" data-p="auto custom"><input type="checkbox" id="UseDirect"> Also use my own IP</label>
-  <div class="row3"><div><label>Timeout (s)</label><input id="Timeout" type="number" value="8"></div><div><label>Delay/proxy ms</label><input id="DelayMs" type="number" value="0"></div><div><label>Fails→drop</label><input id="MaxFails" type="number" value="2"></div></div>
-  <div class="hint">Rate-limited proxies cool down automatically and the name is re-checked on another one. Proxyless is capped at 3 threads.</div>
+  <div class="row" data-p="auto custom"><div><label>Proxy tester threads</label><input id="ValThreads" type="number" value="2000"></div><div><label>Tester timeout (s)</label><input id="ValTimeout" type="number" value="6"></div></div>
+  <div class="row3"><div><label>Timeout (s)</label><input id="Timeout" type="number" value="8"></div><div><label>Delay/proxy ms</label><input id="DelayMs" type="number" value="0"></div><div><label>Fails→drop</label><input id="MaxFails" type="number" value="3"></div></div>
+  <div class="hint">Auto mode pulls 100+ free proxy sources, tests them against Discord at high speed and only uses the working ones. Working proxies are saved and re-used next launch. Rate-limited proxies cool down automatically and the name is re-checked on another one. Proxyless is capped at 3 threads.</div>
  </div>
  <div class="card sec"><h3>Extras</h3>
   <label class="chk"><input type="checkbox" id="SkipChecked" checked> Skip names already checked before</label>
@@ -99,7 +101,10 @@ button:hover{border-color:var(--a)}
   <div class="stat"><div class="v" style="color:var(--c)" id="s-cps">0</div><div class="k">Checks / sec</div></div>
   <div class="stat"><div class="v" style="color:var(--y)" id="s-rate">0</div><div class="k">Rate limits dodged</div></div>
   <div class="stat"><div class="v" style="color:var(--r)" id="s-errs">0</div><div class="k">Proxy errors</div></div>
-  <div class="stat"><div class="v" style="color:var(--a)" id="s-alive">0</div><div class="k">Proxies alive</div></div>
+  <div class="stat"><div class="v" style="color:var(--a)" id="s-alive">0</div><div class="k">Proxies in use</div></div>
+  <div class="stat"><div class="v" id="s-scraped">0</div><div class="k">Proxies scraped</div></div>
+  <div class="stat"><div class="v" id="s-tested">0</div><div class="k">Proxies tested</div></div>
+  <div class="stat"><div class="v" style="color:var(--g)" id="s-working">0</div><div class="k">Working found</div></div>
   <div class="stat"><div class="v" id="s-el">0:00</div><div class="k">Elapsed</div></div>
  </div>
  <div class="bar"><i id="prog"></i></div>
@@ -112,7 +117,7 @@ button:hover{border-color:var(--a)}
 </div></div>
 <div id="toast"></div>
 <script>
-const $=id=>document.getElementById(id);const F=['MinLen','MaxLen','RepType','RepChars','Pattern','WordLang','WordStyle','WordMin','WordMax','WordDigits','WordTop','List','Prefix','Suffix','Sep','SepPos','Count','ProxyMode','ProxyType','Threads','Proxies','UseDirect','Timeout','DelayMs','MaxFails','SkipChecked','SaveTaken','ShowTaken','Sound','Webhook'];
+const $=id=>document.getElementById(id);const F=['MinLen','MaxLen','RepType','RepChars','Pattern','WordLang','WordStyle','WordMin','WordMax','WordDigits','WordTop','List','Prefix','Suffix','Sep','SepPos','Count','ProxyMode','ProxyType','Threads','Proxies','UseDirect','Timeout','DelayMs','MaxFails','ValThreads','ValTimeout','Validate','SkipChecked','SaveTaken','ShowTaken','Sound','Webhook'];
 const D={mixed:'Letters + numbers, at least one number (e.g. a7kx). Classic 4-char hunting.',letters:'Only letters (e.g. qzvx).',digits:'Only numbers (e.g. 4821).',alnum:'Any mix of letters and numbers.',repeater:'Repeating patterns: aaaa, abab, aaabb, palindromes… set any length up to 32.',words:'Real English & French common words (~90k bank), with digit/combo/separator styles.',pattern:'Build your own template like CVCV or LL_DD.',list:'Check your own list of usernames.'};
 let mode='mixed',avail=[],ctx;const ac=$('ac'),lg=$('lg');
 function toast(t){const e=$('toast');e.textContent=t;e.style.opacity=1;clearTimeout(e._t);e._t=setTimeout(()=>e.style.opacity=0,1500)}
@@ -137,7 +142,7 @@ fetch('/api/info').then(r=>r.json()).then(j=>$('wc').textContent='📚 '+fmt(j.e
 const es=new EventSource('/api/events');
 es.onmessage=e=>{const s=JSON.parse(e.data);$('status').textContent=s.running?(s.scraping?'Running · scraping proxies':'Running'):'Idle';$('status').classList.toggle('on',s.running);
 $('startBtn').classList.toggle('hide',s.running);$('stopBtn').classList.toggle('hide',!s.running);
-if(s.checked!==undefined){['checked','avail','taken','rate','errs','alive'].forEach(k=>$('s-'+k).textContent=fmt(s[k]));$('s-cps').textContent=(s.cps||0).toFixed(1);
+if(s.checked!==undefined){['checked','avail','taken','rate','errs','alive','scraped','tested','working'].forEach(k=>$('s-'+k).textContent=fmt(s[k]));$('s-cps').textContent=(s.cps||0).toFixed(1);
 $('s-el').textContent=Math.floor(s.elapsed/60)+':'+String(s.elapsed%60).padStart(2,'0');$('prog').style.width=s.target?Math.min(100,(s.checked+s.invalid+s.failed)/s.target*100)+'%':(s.running?'100%':'0')}
 if(!s.logs||!s.logs.length)return;const st=$('ShowTaken').checked;let h='',got=0;
 for(const l of s.logs){if(l.kind=='avail'){if(!avail.includes(l.msg)){avail.push(l.msg);got++}h+='<div class="l-avail">'+l.t+'  ✅ AVAILABLE  '+l.msg+'</div>'}else if(l.kind=='taken'){if(st)h+='<div class="l-taken">'+l.t+'  ✗ '+l.msg+'</div>'}else h+='<div class="l-'+l.kind+'">'+l.t+'  '+l.msg+'</div>'}
